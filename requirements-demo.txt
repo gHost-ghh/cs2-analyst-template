@@ -1,0 +1,2 @@
+# Verified against a real CS2 Valve replay. Keep parser behavior reproducible.
+demoparser2==0.42.0

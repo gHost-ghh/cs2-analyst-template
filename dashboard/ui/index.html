@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1119">
+  <meta name="description" content="CS2 专属数据工作台。瞄准、射击、对局趋势与战术回放。">
+  <title>CS2 METRICS · 个人竞技分析</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="/assets/players.css">
+  <link rel="stylesheet" href="/assets/coach.css">
+  <link rel="stylesheet" href="/assets/agent-workflow.css">
+  <link rel="stylesheet" href="/assets/agent-reasoning.css">
+  <link rel="stylesheet" href="/assets/native-render.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳转到主要内容</a>
+  <div class="shell">
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#overview" aria-label="CS2 Metrics 首页"><span class="brand-mark" aria-hidden="true">M</span><span>CS2<span class="brand-sub">METRICS</span></span></a>
+      <div class="workspace-label">ANALYTICS WORKSPACE</div>
+      <nav class="nav" aria-label="分析视图">
+        <a href="#overview" data-view="overview" class="nav-item active"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>表现总览</span></a>
+        <a href="#mechanics" data-view="mechanics" class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg><span>瞄准实验室</span><span class="nav-badge">LAB</span></a>
+        <a href="#replay" data-view="replay" class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="m10 8 5 3-5 3ZM8 22h8M12 18v4"/></svg><span>战术回放</span></a>
+        <a href="#matches" data-view="matches" class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg><span>对局档案</span></a>
+        <a href="#players" data-view="players" class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M21 21v-3a6 6 0 0 0-4-5.66"/></svg><span>玩家分析</span></a>
+        <a href="#coach" data-view="coach" class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m12 3 2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2Z"/></svg><span>教练分析</span></a>
+        <a href="#sources" data-view="sources" class="nav-item"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 4 16 4 16 0V5M4 12v7c0 4 16 4 16 0v-7"/></svg><span>数据中心</span></a>
+      </nav>
+      <div class="sidebar-note"><span class="section-label">MATCH DATA</span><div class="sidebar-data-count"><strong id="sidebar-matches">—</strong><span>场对局</span></div><span class="sidebar-rounds" id="sidebar-rounds">— 回合</span></div>
+      <div class="sidebar-bottom"><div class="avatar">GH</div><div><strong id="player-name">我的 CS2 档案</strong><span>私人分析空间</span></div><span class="private-icon" aria-label="私人空间">⌑</span></div>
+    </aside>
+    <div class="main-shell">
+      <header class="topbar"><span class="breadcrumb">个人竞技分析 <span>/</span> <strong id="breadcrumb-view">表现总览</strong></span><div class="topbar-actions"><span class="privacy-badge">PRIVATE WORKSPACE</span><div class="sync-actions"><button id="refresh-button" class="button button-quiet" type="button"><span aria-hidden="true">↻</span> 同步 Demo</button><button id="sync-result-button" class="text-button" type="button" aria-controls="sync-receipt" hidden>查看本次同步结果</button></div></div></header>
+      <main id="main" tabindex="-1">
+        <div class="page-heading"><div><div class="page-kicker" id="page-kicker">PERFORMANCE OVERVIEW</div><h1 id="page-title">表现总览</h1><p id="page-subtitle">对局表现与回合贡献</p></div><div class="updated-at"><span class="live-dot"></span><span id="updated-label">正在读取数据</span></div></div>
+        <div id="notice" class="notice" role="status" hidden></div>
+        <details id="sync-receipt" class="sync-receipt" hidden><summary>本次同步详情</summary><p id="sync-receipt-status"></p><a id="sync-receipt-link" target="_blank" rel="noopener noreferrer" hidden>在 GitHub Actions 查看任务</a><p class="sync-receipt-id" hidden>请求编号 <code id="sync-receipt-id"></code></p></details>
+        <section class="filter-bar" aria-label="数据筛选">
+          <div class="filter-group"><span class="filter-caption">分析范围</span><label><span class="sr-only">地图</span><select id="map-filter"><option value="all">全部地图</option></select></label><label><span class="sr-only">阵营</span><select id="side-filter"><option value="all">全部阵营</option><option value="CT">CT 防守方</option><option value="T">T 进攻方</option></select></label><label class="date-label"><span>起始日期</span><input id="date-filter" type="date" aria-label="筛选比赛起始日期"></label></div>
+          <div class="filter-actions"><button id="reset-filters" class="text-button" type="button">重置</button><span class="filter-divider"></span><button id="export-button" class="button button-quiet" type="button">↓ 导出 CSV</button><button id="export-json" class="icon-button" aria-label="下载当前筛选 JSON" title="下载当前筛选 JSON" type="button">{ }</button></div>
+        </section>
+        <div id="loading" class="loading-state" role="status"><div class="spinner"></div><strong>正在读取比赛数据</strong></div>
+        <div id="fatal-error" class="empty-state" hidden><div class="empty-icon">↻</div><h2>暂时无法读取分析数据</h2><p id="fatal-error-message">请稍后重试。</p><button id="retry-button" class="button button-primary" type="button">重新连接</button></div>
+        <div id="dashboard" hidden>
+          <section id="view-overview" class="view-section" aria-label="表现总览"></section>
+          <section id="view-matches" class="view-section" aria-label="逐局复盘" hidden></section>
+          <section id="view-mechanics" class="view-section" aria-label="枪法与定位" hidden></section>
+          <section id="view-replay" class="view-section" aria-label="战术回放" hidden></section>
+          <section id="view-players" class="view-section" aria-label="玩家分析" hidden></section>
+          <section id="view-coach" class="view-section" aria-label="教练分析" hidden></section>
+          <section id="view-sources" class="view-section" aria-label="同步与来源" hidden></section>
+        </div>
+        <footer class="footer"><span>CS2 METRICS <span class="footer-slash">/</span> PERSONAL ANALYTICS</span><span>北京时间 · Demo 数据</span></footer>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

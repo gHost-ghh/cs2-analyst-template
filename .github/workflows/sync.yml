@@ -1,0 +1,107 @@
+name: CS2 match sync
+run-name: ${{ inputs.dashboard_request_id && format('CS2 Dashboard {0}', inputs.dashboard_request_id) || 'CS2 match sync' }}
+on:
+  workflow_dispatch:
+    inputs:
+      dashboard_request_id:
+        description: 'Dashboard sync request identifier'
+        required: false
+        type: string
+      demo_url:
+        description: 'Optional replay URL (Valve replay CDN by default; never stored in reports)'
+        required: false
+        type: string
+      share_code:
+        description: 'Optional CSGO-... code to enqueue or associate with the replay URL'
+        required: false
+        type: string
+      retry_now:
+        description: 'Retry pending Demo jobs before their backoff expires'
+        default: false
+        type: boolean
+      backfill_native_sources:
+        description: 'Verify missing local-render download sources for completed matches (shares job limit)'
+        default: false
+        type: boolean
+      job_limit:
+        description: 'Maximum Demo jobs in this run (1-20)'
+        default: '4'
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: cs2-match-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: ${{ github.ref == 'refs/heads/main' && vars.CS2_SYNC_ENABLED == 'true' && github.event.repository.private == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: steam/package-lock.json
+      - name: Install replay worker
+        run: |
+          python -m pip install -r requirements-demo.txt
+          npm ci --prefix steam --ignore-scripts
+      - name: Sync Steam codes and Leetify stats
+        id: stats
+        continue-on-error: true
+        env:
+          STEAMID64: ${{ secrets.STEAMID64 }}
+          LEETIFY_API_KEY: ${{ secrets.LEETIFY_API_KEY }}
+          STEAM_WEB_API_KEY: ${{ secrets.STEAM_WEB_API_KEY }}
+          STEAM_MATCH_AUTH_CODE: ${{ secrets.STEAM_MATCH_AUTH_CODE }}
+          STEAM_KNOWNCODE: ${{ secrets.STEAM_KNOWNCODE }}
+        run: python sync.py
+      - name: Download, parse and analyze Demo jobs
+        id: demos
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          STEAMID64: ${{ secrets.STEAMID64 }}
+          STEAM_REFRESH_TOKEN: ${{ secrets.STEAM_REFRESH_TOKEN }}
+          CS2_DEMO_URL: ${{ inputs.demo_url }}
+          CS2_DEMO_SHARE_CODE: ${{ inputs.share_code }}
+          CS2_DEMO_ALLOWED_HOSTS: ${{ vars.CS2_DEMO_ALLOWED_HOSTS }}
+          RETRY_NOW: ${{ inputs.retry_now }}
+          BACKFILL_NATIVE_SOURCES: ${{ inputs.backfill_native_sources }}
+          TRIGGER_EVENT: ${{ github.event_name }}
+          REQUESTED_JOB_LIMIT: ${{ inputs.job_limit }}
+        run: |
+          args=(--upgrade-analysis --publish-checkpoints)
+          if [ "$BACKFILL_NATIVE_SOURCES" = "true" ]; then args+=(--backfill-native-sources); fi
+          if [ "$RETRY_NOW" = "true" ] || [ "$TRIGGER_EVENT" = "push" ]; then args+=(--retry-now); fi
+          if [ "$TRIGGER_EVENT" = "push" ]; then
+            args+=(--limit 20 --download-timeout 300)
+          elif [ "$TRIGGER_EVENT" = "workflow_dispatch" ]; then
+            args+=(--limit "${REQUESTED_JOB_LIMIT:-4}")
+          else
+            args+=(--limit 2)
+          fi
+          python -m cs2demo.pipeline "${args[@]}"
+      - name: Add Demo worker report to run summary
+        if: ${{ always() && !cancelled() }}
+        run: |
+          if [ -f reports/demo_latest.md ]; then cat reports/demo_latest.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Commit generated data only when changed
+        id: commit
+        if: ${{ always() && !cancelled() }}
+        run: python -m cs2demo.checkpoint --root . --github-output "$GITHUB_OUTPUT"
+      - name: Propagate service errors after saving progress
+        if: ${{ always() && !cancelled() }}
+        env:
+          STATS_OUTCOME: ${{ steps.stats.outcome }}
+          DEMOS_OUTCOME: ${{ steps.demos.outcome }}
+        run: |
+          if [ "$STATS_OUTCOME" != "success" ] || [ "$DEMOS_OUTCOME" != "success" ]; then exit 1; fi

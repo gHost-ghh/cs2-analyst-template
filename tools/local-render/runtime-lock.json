@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "node": {
+    "version": "22.20.0",
+    "url": "https://nodejs.org/dist/v22.20.0/node-v22.20.0-win-x64.zip",
+    "sha256": "bb819d6eb8f5bfda294bbc83a7e4ec6539da67c4233d54b0d655b9248b15e29d"
+  },
+  "hlae": {
+    "version": "2.192.8",
+    "url": "https://github.com/advancedfx/advancedfx/releases/download/v2.192.8/hlae_2_192_8.zip",
+    "sha256": "f28a2d7cbd4accb236e114975044bedbe3d3b6d44d4eecfc099bf2dd7e9f69b1"
+  },
+  "sevenzr": {
+    "version": "26.04",
+    "url": "https://github.com/ip7z/7zip/releases/download/26.04/7zr.exe",
+    "sha256": "256feca8e274e5da655e2a284fabafd9f554365eb164862089dacd4e8276d282"
+  },
+  "sevenzip": {
+    "version": "26.04",
+    "url": "https://github.com/ip7z/7zip/releases/download/26.04/7z2604-extra.7z",
+    "sha256": "dc4b11d3399db18b063630137145f5585d8f7ac847bf3639bd1185d7d1f7cee0"
+  },
+  "ffmpeg": {
+    "version": "9.0.2",
+    "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.7z",
+    "sha256": "4705843ccaaf54257c16ad90f3e952ece33c17df964ecf7bfdbb0f49c7171077"
+  }
+}

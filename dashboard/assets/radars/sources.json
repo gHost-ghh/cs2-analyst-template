@@ -1,0 +1,398 @@
+{
+  "asset_version": "2000932",
+  "game_client_version": "2000932",
+  "game_patch_version": "1.41.9.1",
+  "game_buildid": "25947352",
+  "generated_at": "2026-10-15T05:52:52.483262+00:00",
+  "source_repository": "https://github.com/pnxenopoulos/awpy-data",
+  "source_release": "https://github.com/pnxenopoulos/awpy-data/releases/tag/2000932",
+  "source_archive": "https://github.com/pnxenopoulos/awpy-data/releases/download/2000932/images.zip",
+  "source_archive_sha256": "f748f3470eb04bfe8b4c52d994f3687027ffc0b9b717a9b67864e80fa77fa7f5",
+  "archive_checksum_verified": true,
+  "coordinate_source": "https://github.com/pnxenopoulos/awpy-data/releases/download/2000932/map_data.json",
+  "transform_reference": "https://github.com/pnxenopoulos/awpy/blob/ac877164afbd2e2891c66b0a91c373087772cf84/crates/awpy-python/python/awpy/plot.py",
+  "transform": {
+    "x": "(world_x - pos_x) / scale",
+    "y": "(pos_y - world_y) / scale",
+    "origin": "top-left",
+    "image_pixels": 1024,
+    "rotate_zoom_applied": false
+  },
+  "assets": {
+    "de_ancient": {
+      "file": "de_ancient.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 89550,
+      "sha256": "cb6adca45e32ecff0b131f742c129324ba5e2dd695247f61d2d21d85ef2c581c",
+      "coordinates": {
+        "pos_x": -2953,
+        "pos_y": 2164,
+        "rotate": 0,
+        "scale": 5,
+        "zoom": 0
+      }
+    },
+    "de_dust2": {
+      "file": "de_dust2.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 175761,
+      "sha256": "0828297130ce26db25a299806ff743df9104de634a3e64b52b358f6f4399354d",
+      "coordinates": {
+        "pos_x": -2476,
+        "pos_y": 3239,
+        "rotate": 1,
+        "scale": 4.4,
+        "zoom": 1.1
+      }
+    },
+    "de_nuke": {
+      "file": "de_nuke.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 96995,
+      "sha256": "21167d05292e80eebe7b068f0bba36a2e3f9116d154d96952a8366cdcc72e6b1",
+      "coordinates": {
+        "pos_x": -3453,
+        "pos_y": 2887,
+        "rotate": null,
+        "scale": 7,
+        "verticalsections": {
+          "default": {
+            "AltitudeMax": "10000",
+            "AltitudeMin": "-495"
+          },
+          "lower": {
+            "AltitudeMax": "-495",
+            "AltitudeMin": "-10000"
+          }
+        },
+        "zoom": null
+      },
+      "level": "upper"
+    },
+    "de_nuke_lower": {
+      "file": "de_nuke_lower.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 96487,
+      "sha256": "b8c4e659491ba79be60b7d3f9bc78bdaeb808afc2bae14bf3b25b1801220ebe0",
+      "coordinates": {
+        "pos_x": -3453,
+        "pos_y": 2887,
+        "rotate": null,
+        "scale": 7,
+        "verticalsections": {
+          "default": {
+            "AltitudeMax": "10000",
+            "AltitudeMin": "-495"
+          },
+          "lower": {
+            "AltitudeMax": "-495",
+            "AltitudeMin": "-10000"
+          }
+        },
+        "zoom": null
+      },
+      "level": "lower"
+    },
+    "ar_baggage": {
+      "file": "ar_baggage.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 116861,
+      "sha256": "b57df0af5b17570b48f8da8f53926109f35bb78b8b79df22b22e744beb0237ed",
+      "coordinates": {
+        "pos_x": -1316,
+        "pos_y": 1288,
+        "rotate": 1,
+        "scale": 2.539062,
+        "verticalsections": {
+          "default": {
+            "AltitudeMax": "10000",
+            "AltitudeMin": "-5"
+          },
+          "lower": {
+            "AltitudeMax": "-5",
+            "AltitudeMin": "-10000"
+          }
+        },
+        "zoom": 1.3
+      },
+      "level": "upper"
+    },
+    "ar_baggage_lower": {
+      "file": "ar_baggage_lower.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 62062,
+      "sha256": "0da618ebdeede2e8204f8c6873ce92b58596f17f66950bb6f514b6c3e0ab3a94",
+      "coordinates": {
+        "pos_x": -1316,
+        "pos_y": 1288,
+        "rotate": 1,
+        "scale": 2.539062,
+        "verticalsections": {
+          "default": {
+            "AltitudeMax": "10000",
+            "AltitudeMin": "-5"
+          },
+          "lower": {
+            "AltitudeMax": "-5",
+            "AltitudeMin": "-10000"
+          }
+        },
+        "zoom": 1.3
+      },
+      "level": "lower"
+    },
+    "ar_shoots": {
+      "file": "ar_shoots.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 309948,
+      "sha256": "58e496c52c5611e688ad5bb7eb7839430e7490c507961f9976594dba41a95c7b",
+      "coordinates": {
+        "pos_x": -1368,
+        "pos_y": 1952,
+        "rotate": null,
+        "scale": 2.6875,
+        "zoom": null
+      }
+    },
+    "ar_shoots_night": {
+      "file": "ar_shoots_night.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 224248,
+      "sha256": "448a60434e4264068d5c6d58c4c3965c6974db6a1cdd90891c8e5d4c265c7c64",
+      "coordinates": {
+        "pos_x": -1368,
+        "pos_y": 1952,
+        "rotate": null,
+        "scale": 2.6875,
+        "zoom": null
+      }
+    },
+    "cs_italy": {
+      "file": "cs_italy.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 104602,
+      "sha256": "67b2ffe024e0410efaa1051c97fec4264c8ddb8977035bd92854fe95501c93c4",
+      "coordinates": {
+        "pos_x": -2647,
+        "pos_y": 2592,
+        "rotate": 1,
+        "scale": 4.6,
+        "zoom": 1.5
+      }
+    },
+    "cs_office": {
+      "file": "cs_office.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 197509,
+      "sha256": "14f8336c1b6d41b251e925dba506e3fb32ff7adc66bc2c2ca5752b0f528e734b",
+      "coordinates": {
+        "pos_x": -1838,
+        "pos_y": 1858,
+        "rotate": null,
+        "scale": 4.1,
+        "zoom": null
+      }
+    },
+    "de_ancient_night": {
+      "file": "de_ancient_night.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 77264,
+      "sha256": "f1f7754f1c2fa6ce9657f44f846f02ffb83c7c925fbeeeaae842d2fb70821e77",
+      "coordinates": {
+        "pos_x": -2953,
+        "pos_y": 2164,
+        "rotate": 0,
+        "scale": 5,
+        "zoom": 0
+      }
+    },
+    "de_anubis": {
+      "file": "de_anubis.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 218922,
+      "sha256": "b8f07c36edb13e34dbfaabf9a74e057961ac4fb29545d98d16ff9b7c4e6d1206",
+      "coordinates": {
+        "pos_x": -2796,
+        "pos_y": 3328,
+        "rotate": null,
+        "scale": 5.22,
+        "zoom": null
+      }
+    },
+    "de_cache": {
+      "file": "de_cache.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 93413,
+      "sha256": "94c058b3deaa5cc24be81006322da3af1ef0bbded116160a3fcdea6d87227967",
+      "coordinates": {
+        "pos_x": -2000,
+        "pos_y": 3250,
+        "rotate": null,
+        "scale": 5.5,
+        "zoom": null
+      }
+    },
+    "de_inferno": {
+      "file": "de_inferno.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 136914,
+      "sha256": "53e1d660d5e61a9b876cc56725c2e891c56efcb788657520fa9c10fec321dce3",
+      "coordinates": {
+        "pos_x": -2087,
+        "pos_y": 3870,
+        "rotate": null,
+        "scale": 4.9,
+        "zoom": null
+      }
+    },
+    "de_mirage": {
+      "file": "de_mirage.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 143685,
+      "sha256": "c8032f6c83ffca63c0a20ebdcc598a0e1aa618efd746e381e2db26f33a4a964f",
+      "coordinates": {
+        "pos_x": -3230,
+        "pos_y": 1713,
+        "rotate": 0,
+        "scale": 5,
+        "zoom": 0
+      }
+    },
+    "de_overpass": {
+      "file": "de_overpass.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 290940,
+      "sha256": "2a59b62668e80037b5a88e980f56af360269f5ea581d52eb0669d78a981f0d96",
+      "coordinates": {
+        "pos_x": -4831,
+        "pos_y": 1781,
+        "rotate": 0,
+        "scale": 5.2,
+        "zoom": 0
+      }
+    },
+    "de_train": {
+      "file": "de_train.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 146404,
+      "sha256": "ccdb11d6f9fbfb7bf199dfa35d58b3e86131a2c872f38b67502d1be3759e912e",
+      "coordinates": {
+        "pos_x": -2308,
+        "pos_y": 2078,
+        "rotate": null,
+        "scale": 4.082077,
+        "verticalsections": {
+          "default": {
+            "AltitudeMax": "20000",
+            "AltitudeMin": "-50"
+          },
+          "lower": {
+            "AltitudeMax": "-50",
+            "AltitudeMin": "-5000"
+          }
+        },
+        "zoom": null
+      },
+      "level": "upper"
+    },
+    "de_train_lower": {
+      "file": "de_train_lower.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 135051,
+      "sha256": "bc1aa9b1bbcceb06b8e82b7e0980ae11188aa1d460a2e799da9ecd8e21e4d67a",
+      "coordinates": {
+        "pos_x": -2308,
+        "pos_y": 2078,
+        "rotate": null,
+        "scale": 4.082077,
+        "verticalsections": {
+          "default": {
+            "AltitudeMax": "20000",
+            "AltitudeMin": "-50"
+          },
+          "lower": {
+            "AltitudeMax": "-50",
+            "AltitudeMin": "-5000"
+          }
+        },
+        "zoom": null
+      },
+      "level": "lower"
+    },
+    "de_vertigo": {
+      "file": "de_vertigo.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 97762,
+      "sha256": "d2e2e18668f951f7d3b7c6a4fe4580632d5de253d0991f4b9639f9eca73264bf",
+      "coordinates": {
+        "pos_x": -3168,
+        "pos_y": 1762,
+        "rotate": null,
+        "scale": 4,
+        "verticalsections": {
+          "default": {
+            "AltitudeMax": "20000",
+            "AltitudeMin": "11700"
+          },
+          "lower": {
+            "AltitudeMax": "11700",
+            "AltitudeMin": "-10000"
+          }
+        },
+        "zoom": null
+      },
+      "level": "upper"
+    },
+    "de_vertigo_lower": {
+      "file": "de_vertigo_lower.png",
+      "width": 1024,
+      "height": 1024,
+      "bytes": 123826,
+      "sha256": "61639197f940d9702f6cb5476a38ae932a821170cdb6405f14733a5b83e32723",
+      "coordinates": {
+        "pos_x": -3168,
+        "pos_y": 1762,
+        "rotate": null,
+        "scale": 4,
+        "verticalsections": {
+          "default": {
+            "AltitudeMax": "20000",
+            "AltitudeMin": "11700"
+          },
+          "lower": {
+            "AltitudeMax": "11700",
+            "AltitudeMin": "-10000"
+          }
+        },
+        "zoom": null
+      },
+      "level": "lower"
+    }
+  },
+  "attribution": "Counter-Strike 2 radar images and overview data are game assets owned by Valve Corporation. Extracted/packaged by the community awpy-data project; not affiliated with or endorsed by Valve. AWPy build scripts are MIT licensed, Copyright (c) 2025 Peter Xenopoulos; the game assets are not relicensed under MIT.",
+  "limitations": [
+    "The radar assets are pinned to ClientVersion 2000932 (2026-10-15 bundle). Historical Demo map build equality has not been verified; positional display is illustrative and must not be used as visibility geometry.",
+    "A radar is a flat overview, not occlusion or navigability evidence. Dynamic smoke, doors and vertical visibility are not modeled."
+  ],
+  "lower_level_rule": "AltitudeMin <= world_z < AltitudeMax for the lower vertical section; de_nuke is -10000 <= world_z < -495.",
+  "coordinate_source_sha256": "b0c8e7e95839b283f311e01c7d7022e5fe701bcfbb44134e7cedccec0f916e67"
+}

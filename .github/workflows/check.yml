@@ -1,0 +1,36 @@
+name: Validate independent CS2 template
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m pip install -r requirements-demo.txt
+      - run: npm ci --prefix steam --ignore-scripts
+      - name: Download pinned public replay
+        run: curl --fail --location --retry 2 --max-time 180 https://raw.githubusercontent.com/LaihoE/demoparser/45ca85aeac8fb0de9d385124d2c7fe0e7b8ff0c8/src/parser/test_demo.dem --output "$RUNNER_TEMP/public.dem"
+      - run: python -m unittest discover -s tests -v
+        env:
+          CS2_PUBLIC_TEST_DEMO: ${{ runner.temp }}/public.dem
+      - name: Parse public replay in isolated workspace
+        run: python -m cs2demo.pipeline --root "$RUNNER_TEMP/cs2-public-smoke" --steamid 76561197964020430 --local-demo "$RUNNER_TEMP/public.dem"
+      - run: npm test --prefix steam
+      - run: node --test tools/setup/*.test.mjs
+      - name: Exercise synthetic setup without external accounts
+        run: node tools/setup/configure.mjs --repository example-owner/example-private-repo --steamid 76561198000000000 --sites-project-id appgprj_synthetic --site-origin https://synthetic.example
+      - run: npm test --prefix dashboard
+      - run: npm run build --prefix dashboard
+      - name: Check optional native source package
+        run: node tools/local-render/package.mjs --output "${{ runner.temp }}/cs2lab-windows.zip"
