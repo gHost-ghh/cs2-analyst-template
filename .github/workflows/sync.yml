@@ -59,6 +59,7 @@ jobs:
         continue-on-error: true
         env:
           STEAMID64: ${{ secrets.STEAMID64 }}
+          CS2_SKIP_LEETIFY: ${{ vars.CS2_LEETIFY_ENABLED != 'true' }}
           LEETIFY_API_KEY: ${{ secrets.LEETIFY_API_KEY }}
           STEAM_WEB_API_KEY: ${{ secrets.STEAM_WEB_API_KEY }}
           STEAM_MATCH_AUTH_CODE: ${{ secrets.STEAM_MATCH_AUTH_CODE }}

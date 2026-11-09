@@ -2,15 +2,17 @@ const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&
 const numeric=value=>typeof value==='number'&&Number.isFinite(value);
 export const NATIVE_LIMITS=Object.freeze({clips:16,seconds:180,part_bytes:512*1024,artifact_bytes:24*1024*1024,connect_ms:180000,bridge_origin:'http://127.0.0.1:43187',channel:'cs2-native-local-v1'});
 const statusLabels={unrendered:'尚未渲染',queued:'等待本机连接',downloading:'下载 Demo',rendering:'本机渲染中',encoding:'视频处理中',uploading:'上传中',validating:'校验中',ready:'原生回放',failed:'渲染未完成',cancelled:'已取消',expired:'连接已过期'};
-export function nativeClipKey(clip){return JSON.stringify([clip.match_id,clip.round_number,clip.burst_id,clip.source_sha256??null,clip.detail_revision??null,clip.start_tick??null,clip.finish_tick??null,clip.tickrate??null]);}
+export function nativeClipKey(clip){return JSON.stringify([clip.match_id,clip.round_number,clip.burst_id,clip.source_sha256??null,clip.detail_revision??null,nativeExpectedAnalysis(clip),clip.start_tick??null,clip.finish_tick??null,clip.tickrate??null]);}
+function nativeExpectedAnalysis(clip){return clip.analysis_sha256??(/^[a-f0-9]{64}$/.test(clip.detail_revision??'')?clip.detail_revision:null);}
 export function nativeArtifactMatches(value,clip){
- const alignment=value?.alignment;
+ const alignment=value?.alignment,analysis=nativeExpectedAnalysis(clip);
+ if(!/^[a-f0-9]{64}$/.test(value?.analysis_sha256??'')||analysis!==null&&(!/^[a-f0-9]{64}$/.test(analysis)||value.analysis_sha256!==analysis))return false;
  return Boolean(value?.state==='rendered'&&value.validation?.status==='passed'&&value.validation?.kind==='native_engine_frames'&&value.match_id===clip.match_id&&value.burst_id===clip.burst_id&&/^[a-f0-9]{64}$/.test(clip.source_sha256??'')&&value.source_sha256===clip.source_sha256&&alignment&&alignment.requested_start_tick===clip.start_tick&&alignment.finish_tick===clip.finish_tick&&alignment.tickrate===clip.tickrate&&numeric(alignment.start_tick)&&alignment.start_tick>=clip.start_tick&&alignment.start_tick<=clip.start_tick+2&&alignment.start_tick<alignment.finish_tick&&value.validation.first_tick===alignment.start_tick);
 }
 export function nativePlanMatches(response,clips){
  const plan=response?.plan,first=clips[0];
- if(!first||plan?.match_id!==first.match_id||plan.source_sha256!==first.source_sha256||plan.tickrate!==first.tickrate||!Array.isArray(plan.clips)||plan.clips.length!==clips.length)return false;
- if(/^[a-f0-9]{64}$/.test(first.detail_revision??'')&&response.analysis_sha256!==first.detail_revision)return false;
+ if(!first||!/^[a-f0-9]{64}$/.test(response?.analysis_sha256??'')||plan?.match_id!==first.match_id||plan.source_sha256!==first.source_sha256||plan.tickrate!==first.tickrate||!Array.isArray(plan.clips)||plan.clips.length!==clips.length)return false;
+ const analysis=nativeExpectedAnalysis(first);if(analysis!==null&&(!/^[a-f0-9]{64}$/.test(analysis)||response.analysis_sha256!==analysis))return false;
  return clips.every(clip=>{const planned=plan.clips.find(row=>row.burst_id===clip.burst_id);return planned&&planned.start_tick===clip.start_tick&&planned.finish_tick===clip.finish_tick&&clip.source_sha256===plan.source_sha256&&clip.tickrate===plan.tickrate;});
 }
 export function clipDuration(clip){const rate=clip.tickrate||64,start=clip.start_tick??clip.points?.[0]?.tick,end=clip.finish_tick??clip.points?.at(-1)?.tick;return numeric(start)&&numeric(end)&&numeric(rate)&&rate>0&&end>start?(end-start)/rate:null;}
@@ -262,7 +264,7 @@ export function mountNativeRender(container,{clip,rows=[],onTick=()=>{},getSpeed
     const digest=[...new Uint8Array(await crypto.subtle.digest('SHA-256',body))].map(value=>value.toString(16).padStart(2,'0')).join('');if(digest!==message.sha256)throw Error('Artifact digest mismatch');
     await api(`/api/native-jobs?job_id=${encodeURIComponent(session.job.job_id)}&artifact_id=${encodeURIComponent(artifact.artifact_id)}&part_index=${artifact.next}`,{method:'PUT',headers:{'content-type':'application/octet-stream','x-native-ticket':session.ticket,'x-content-sha256':digest},body});artifact.next++;notifyBridge(session,'artifact-ack',{job_id:session.job.job_id,artifact_id:artifact.artifact_id,part_index:message.part_index,ok:true});
    };
-   session.finish=async message=>{if(message.job_id!==session.job.job_id||!session.prepared||[...session.artifacts.values()].some(row=>row.next!==row.part_count))throw Error('Incomplete upload');const completed=await api('/api/native-jobs',jsonPost({action:'complete',job_id:session.job.job_id,ticket:session.ticket}));for(const row of completed.clips||[]){const selected=selection.clips.find(clip=>clip.burst_id===row.burst_id);if(selected){const value={...row,match_id:completed.match_id,source_sha256:completed.source_sha256};if(nativeArtifactMatches(value,selected))artifactCache.set(nativeClipKey(selected),value);}}sessionStatus(session,'ready');};
+   session.finish=async message=>{if(message.job_id!==session.job.job_id||!session.prepared||[...session.artifacts.values()].some(row=>row.next!==row.part_count))throw Error('Incomplete upload');const completed=await api('/api/native-jobs',jsonPost({action:'complete',job_id:session.job.job_id,ticket:session.ticket}));for(const row of completed.clips||[]){const selected=selection.clips.find(clip=>clip.burst_id===row.burst_id);if(selected){const value={...row,match_id:completed.match_id,source_sha256:completed.source_sha256,analysis_sha256:completed.analysis_sha256};if(nativeArtifactMatches(value,selected))artifactCache.set(nativeClipKey(selected),value);}}sessionStatus(session,'ready');};
    session.detail='在这里依次点击“打开本机助手”和“助手已打开，连接上传”，连接窗口也保留相同步骤';setStatus('queued',session.detail);await relaySession(session);
   }catch(error){session?.cleanup?.();popup.close();setStatus('unrendered');showError(error.message);}finally{creatingJob=false;}
  }
@@ -277,6 +279,6 @@ export function mountNativeRender(container,{clip,rows=[],onTick=()=>{},getSpeed
  container.addEventListener('click',click);
  container.addEventListener('input',event=>{if(alive&&event.target.matches('[data-native-seek]')&&video)seekTime(Number(event.target.value));});
  container.addEventListener('change',event=>{if(alive&&event.target.matches('[data-native-speed]')&&video)video.playbackRate=Number(event.target.value);});
- sessionSubscribers.add(onSessionChange);session=[...activeSessions].find(value=>value.clipKeys?.has(key))||null;if(session){setStatus(session.status,session.detail);}else if(artifactCache.has(key))showReady(artifactCache.get(key));else load();
+ sessionSubscribers.add(onSessionChange);session=[...activeSessions].find(value=>value.clipKeys?.has(key))||null;if(session){setStatus(session.status,session.detail);}else if(nativeExpectedAnalysis(clip)!==null&&artifactCache.has(key))showReady(artifactCache.get(key));else load();
   return {seek:seekTick,pause(){video?.pause();cancelFrame();if(alive&&seekPending&&video?.requestVideoFrameCallback)scheduleFrame();},destroy(){alive=false;updateConnectionControls();loadController.abort();resetEvidence();video?.pause();cancelFrame();if(video){video.removeAttribute('src');video.load();}container.removeEventListener('click',click);sessionSubscribers.delete(onSessionChange);}};
 }

@@ -9,6 +9,34 @@ CODE1 = "CSGO-CQNLr-6sp23-JwjmS-kQPwR-tm7SA"
 CODE2 = "CSGO-GADqf-jjyJ8-cSP2r-smZRo-TO2xK"
 
 class TestSync(unittest.TestCase):
+    def test_optional_leetify_keeps_cached_records_and_steam_discovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(sync, "DATA", root / "data"), patch.object(sync, "REPORTS", root / "reports"), \
+                 patch.dict("os.environ", {"STEAMID64": SID, "CS2_SKIP_LEETIFY": "true"}, clear=True), \
+                 patch.object(sync, "sync_steam_codes", return_value=({CODE1}, True)) as steam, \
+                 patch.object(sync, "sync_leetify") as leetify:
+                cached = root / "data/matches/cached.json"
+                sync.write_json_if_changed(cached, {"id": "cached", "data_source": "matchmaking", "finished_at": "2026-01-01T00:00:00Z", "player_stats": None})
+                original = cached.read_bytes()
+                sync.main()
+                steam.assert_called_once()
+                leetify.assert_not_called()
+                self.assertEqual(cached.read_bytes(), original)
+                self.assertEqual(sync.read_json(root / "reports/sync_status.json", {})["leetify_status"], "disabled")
+                self.assertEqual(sync.read_json(root / "reports/sync_status.json", {})["recorded_valve_matches"], 1)
+
+    def test_existing_default_still_runs_leetify_enrichment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(sync, "DATA", root / "data"), patch.object(sync, "REPORTS", root / "reports"), \
+                 patch.dict("os.environ", {"STEAMID64": SID}, clear=True), \
+                 patch.object(sync, "sync_steam_codes", return_value=(set(), False)), \
+                 patch.object(sync, "sync_leetify", return_value=([], False)) as leetify:
+                sync.main()
+                leetify.assert_called_once_with(SID)
+                self.assertEqual(sync.read_json(root / "reports/sync_status.json", {})["leetify_status"], "enabled")
+
     def test_parse_matches(self):
         self.assertEqual(len(sync.read_leetify_matches([{"id": "abc"}])), 1)
         self.assertEqual(len(sync.read_leetify_matches({"matches": [{"id":"abc"}]})), 1)

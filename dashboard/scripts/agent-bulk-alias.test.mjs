@@ -20,3 +20,29 @@ test('a second turn reuses source-verified prepared packs but creates new exact 
  const foreign=createAgentRuntime({owner:'76561198000000001',store}),third=await foreign.begin({question:'独立用户',context:{view:'coach'},task:{mode:'diagnose'},source});assert.equal(await third.cachedStatisticsPack(ref('statistics'),ref('matches')),null);
  assert.equal(await second.cachedStatisticsPack({...ref('statistics'),content_sha256:'f'.repeat(64)},ref('matches')),null);
 });
+
+async function registerPack(session){
+ const value=pack();await session.rememberStatisticsPack(ref('statistics'),ref('matches'),value);
+ const [entry]=await session.rememberQueryBatch([{query:{resource:'rounds',match_id:id,offset:0,limit:100},result:{resource:'rounds',source,statistics_pack:value,evidence_refs:[`match:${id}`,...value.round_evidence_refs,...value.round_numbers.map(n=>`match:${id}:r${n}`)]}}]);return entry;
+}
+
+test('detailed aim aliases remain addressable after a complete statistics pack is registered',async()=>{
+ const runtime=createAgentRuntime({owner}),session=await runtime.begin({question:'详细瞄准证据',source}),bulk=await registerPack(session),alias=`match:${id}:r1:aim:r1:b100`;
+ const detail=await session.rememberQuery({resource:'aim',match_id:id,round_number:1},{resource:'aim',source,items:[{clip_id:'r1:b100',evidence_ref:alias}],evidence_refs:[alias]});
+ const restored=await session.restoreQuery(alias,{requireUnique:true});assert.equal(restored.reference,detail.reference);assert.notEqual(restored.reference,bulk.reference);assert.equal(restored.query.resource,'aim');assert.equal(restored.result.items[0].clip_id,'r1:b100');assert.equal(restored.ambiguous,undefined);
+ assert.deepEqual(await session.restoreQuery(detail.reference,{requireUnique:true}),restored);assert.equal(await session.restoreQuery(`match:${id}:r1:aim:r1:b101`),null);
+});
+
+test('whole-pack and paginated aliases preserve ambiguity and exact query selection',async()=>{
+ const runtime=createAgentRuntime({owner}),session=await runtime.begin({question:'分页证据',source}),bulk=await registerPack(session),alias=`match:${id}:r1`;
+ const page=await session.rememberQuery({resource:'rounds',match_id:id,offset:0,limit:1},{resource:'rounds',source,items:[{round_number:1,damage:0,evidence_ref:alias}],evidence_refs:[alias]});
+ await assert.rejects(session.restoreQuery(alias,{requireUnique:true}),error=>error.code==='query_archive_ambiguous');
+ const restored=await session.restoreQuery(alias);assert.equal(restored.reference,bulk.reference);assert.equal(restored.ambiguous,true);
+ assert.equal((await session.restoreQuery(page.reference,{requireUnique:true})).result.items[0].round_number,1);assert.equal((await session.restoreQuery(bulk.reference,{requireUnique:true})).result.statistics_pack.match_id,id);
+});
+
+test('an earlier detailed page keeps first-reference ordering when a later complete pack overlaps it',async()=>{
+ const runtime=createAgentRuntime({owner}),session=await runtime.begin({question:'先读取分页再读取全库',source}),alias=`match:${id}:r1`;
+ const page=await session.rememberQuery({resource:'rounds',match_id:id,offset:0,limit:1},{resource:'rounds',source,items:[{round_number:1,evidence_ref:alias}],evidence_refs:[alias]});await registerPack(session);
+ const restored=await session.restoreQuery(alias);assert.equal(restored.reference,page.reference);assert.equal(restored.ambiguous,true);await assert.rejects(session.restoreQuery(alias,{requireUnique:true}),error=>error.code==='query_archive_ambiguous');
+});

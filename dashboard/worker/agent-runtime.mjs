@@ -1,4 +1,4 @@
-import {QUERY_INPUT_SCHEMA,QUERY_RESOURCES,AGENT_PLAN_SCOPE_PROPERTIES} from './query.mjs';
+import {normalizeQueryInput,QUERY_RESOURCES,AGENT_PLAN_SCOPE_PROPERTIES} from './query.mjs';
 import {validateBoundAgentVisualization,projectAgentVisualBindingData} from '../shared/agent-visual.mjs';
 import {projectAgentWorkflow} from './agent-workflow.mjs';
 import {appendProviderReasoning,publicProviderReasoning} from './agent-reasoning.mjs';
@@ -16,7 +16,6 @@ const LEASE_MS=150000,MAX_RECORD_BYTES=768*1024,RECENT_TURNS=8,MAX_PLAN_REVISION
 // explicit resume of the current unfinished turn; GET never retries a model.
 const MANUAL_PROVIDER_FAILURES=new Set(['provider_request_failed','provider_auth_failed','provider_quota_exceeded','provider_rate_limited']);
 const canResumeProviderFailure=turn=>turn.status==='failed'&&turn.result==null&&turn.presentation_validated!==true&&MANUAL_PROVIDER_FAILURES.has(turn.error);
-const SCOPE_FIELDS=Object.keys(QUERY_INPUT_SCHEMA.properties).filter(key=>key!=='resource');
 const statisticsSection=value=>['local_statistics','local_statistics_catalog'].includes(value);
 const FORBIDDEN_SCOPE_KEYS=new Set(['__proto__','prototype','constructor','toString','valueOf','hasOwnProperty','api_key','authorization','cookie','password','secret','access_token','refresh_token']);
 const encoder=new TextEncoder();
@@ -27,8 +26,10 @@ const ACTIVITY_PHASES=['plan','finding','revision','reading','planning','present
 const ACTIVITY_STATUSES=['started','completed','failed'];
 const plainValues=value=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.values(Object.getOwnPropertyDescriptors(value)).every(item=>Object.hasOwn(item,'value'));
 function publicQuery(value){
-  if(!plainValues(value)||!ownKeys(value,['resource',...SCOPE_FIELDS])||!QUERY_RESOURCES.includes(value.resource))throw new AgentRuntimeError('invalid_activity',400);
-  return {resource:value.resource,...(normalizeScope(Object.fromEntries(Object.entries(value).filter(([name])=>name!=='resource')))??{})};
+  // Archived queries and public activity locators share the data contract,
+  // not the narrower task-plan scope. Keep omitted pagination omitted so old
+  // query hashes and exact archive lookup remain stable.
+  try{return normalizeQueryInput(value,{defaults:false,partial:true});}catch{throw new AgentRuntimeError('invalid_activity',400);}
 }
 function activityPayload(value){
   if(!plainValues(value)||!ownKeys(value,['kind','phase','message','name','call_id','attempt','status','resource','query','summary','evidence_refs'])||!['commentary','tool','phase','plan'].includes(value.kind))throw new AgentRuntimeError('invalid_activity',400);
@@ -145,10 +146,10 @@ function statisticsObservation(turn,{query,result}){
   try{return normalizeScope({dataset:spec.dataset,...(spec.scope!=null?{scope:spec.scope}:{}),...(spec.path!=null?{path:spec.path.split('.')}:{} )});}catch{return null;}
 }
 function noteObservedRead(turn,query,reference,statistics=null){
-  if(!QUERY_RESOURCES.includes(query?.resource)||typeof reference!=='string'||!reference.length||reference.length>240)return;
+  if(typeof reference!=='string'||!reference.length||reference.length>240)return;
+  const clean=publicQuery(query);
   if(!Array.isArray(turn.plan_observations))turn.plan_observations=[];
-  const previous=turn.plan_observations.find(entry=>entry.reference===reference);if(previous){if(statistics&&canonical(previous.query)===canonical(query))previous.statistics=clone(statistics);return;}
-  const clean={resource:query.resource,...(normalizeScope(Object.fromEntries(Object.entries(query).filter(([key])=>key!=='resource')))??{})};
+  const previous=turn.plan_observations.find(entry=>entry.reference===reference);if(previous){if(statistics&&canonical(previous.query)===canonical(clean))previous.statistics=clone(statistics);return;}
   turn.plan_observation_sequence=(turn.plan_observation_sequence??0)+1;
   turn.plan_observations.push({query:clean,reference,sequence:turn.plan_observation_sequence,...(statistics?{statistics:clone(statistics)}:{})});
   if(turn.plan_observations.length>128){const recent=[...turn.plan_observations].reverse(),keep=new Set();for(const resource of QUERY_RESOURCES){const found=recent.find(entry=>entry.query.resource===resource);if(found)keep.add(found);}for(const step of turn.plan??[])for(const resource of step.resources??[]){const found=recent.find(entry=>entry.query.resource===resource&&matchesScope(entry.query,step.scope,entry.statistics));if(found)keep.add(found);}for(const entry of recent.slice(0,128))if(keep.size<384)keep.add(entry);turn.plan_observations=turn.plan_observations.filter(entry=>keep.has(entry));}
@@ -416,11 +417,27 @@ export function createAgentRuntime({store=createMemoryAgentStore(),owner,now=()=
       },
       async restoreQuery(reference,{requireUnique=false}={}){
         if(typeof reference!=='string'||!reference||reference.length>240)return null;const refPrefix=`turn:${record.turn.id}:g${record.turn.generation??0}:query:`;
-        let actual=reference,ambiguous=false;const bulkMatch=/^match:([a-f0-9]{24})(?::r[1-9][0-9]*(?::[A-Za-z0-9_:-]+)?)?$/.exec(reference),bulkReference=bulkMatch&&record.turn.bulk_source_refs?.[bulkMatch[1]];if(bulkReference){if(!bulkReference.startsWith(refPrefix))throw new AgentRuntimeError('query_archive_invalid',503);actual=bulkReference;}if(!actual.startsWith(refPrefix)){const pointer=await aliasPointer(reference);if(!pointer)return null;actual=pointer.reference;ambiguous=pointer.ambiguous===true;if(requireUnique&&ambiguous)throw new AgentRuntimeError('query_archive_ambiguous',422);}
-        if(typeof actual!=='string'||!actual.startsWith(refPrefix)||!/^\d+$/.test(actual.slice(refPrefix.length)))return null;const found=await sealedLoad(readBase+actual.slice(refPrefix.length)+'.json');if(!found)return null;const entry=found.value;
-        if(entry.result?.statistics_pack?.statistics_cache){const {statistics_cache}=entry.result.statistics_pack;if(entry.query?.resource!=='rounds'||entry.query.match_id!==statistics_cache.statistics_ref?.match_id)throw new AgentRuntimeError('query_archive_invalid',503);const pack=await loadStatisticsPack(statistics_cache.statistics_ref,statistics_cache.detail_ref);if(!pack)throw new AgentRuntimeError('query_archive_invalid',503);entry.result.statistics_pack=pack;}
-        if(reference!==actual&&!queryEvidenceIds(entry.result).includes(reference)){if(bulkReference)return null;throw new AgentRuntimeError('query_archive_invalid',503);}
-        if(entry.reference!==actual||entry.result_sha256!==await dataHash(JSON.stringify(entry.result)))throw new AgentRuntimeError('query_archive_invalid',503);return {query:publicQuery(entry.query),reference:entry.reference,result:clone(entry.result),...(ambiguous?{ambiguous:true}:{})};
+        const loadCurrent=async actual=>{
+          if(typeof actual!=='string'||!actual.startsWith(refPrefix)||!/^\d+$/.test(actual.slice(refPrefix.length)))return null;const found=await sealedLoad(readBase+actual.slice(refPrefix.length)+'.json');if(!found)return null;const entry=found.value;
+          if(entry.result?.statistics_pack?.statistics_cache){const {statistics_cache}=entry.result.statistics_pack;if(entry.query?.resource!=='rounds'||entry.query.match_id!==statistics_cache.statistics_ref?.match_id)throw new AgentRuntimeError('query_archive_invalid',503);const pack=await loadStatisticsPack(statistics_cache.statistics_ref,statistics_cache.detail_ref);if(!pack)throw new AgentRuntimeError('query_archive_invalid',503);entry.result.statistics_pack=pack;}
+          if(entry.reference!==actual||entry.result_sha256!==await dataHash(JSON.stringify(entry.result)))throw new AgentRuntimeError('query_archive_invalid',503);return entry;
+        };
+        let entry,ambiguous=false;
+        if(reference.startsWith(refPrefix))entry=await loadCurrent(reference);
+        else{
+          const bulkMatch=/^match:([a-f0-9]{24})(?::r[1-9][0-9]*(?::[A-Za-z0-9_:-]+)?)?$/.exec(reference),bulkReference=bulkMatch&&record.turn.bulk_source_refs?.[bulkMatch[1]],pointer=await aliasPointer(reference);
+          if(bulkReference&&(typeof bulkReference!=='string'||!bulkReference.startsWith(refPrefix)))throw new AgentRuntimeError('query_archive_invalid',503);
+          let bulk=bulkReference?await loadCurrent(bulkReference):null;if(bulk&&!queryEvidenceIds(bulk.result).includes(reference))bulk=null;
+          const indexed=pointer?(pointer.reference===bulk?.reference?bulk:await loadCurrent(pointer.reference)):null;
+          if(indexed&&!queryEvidenceIds(indexed.result).includes(reference))throw new AgentRuntimeError('query_archive_invalid',503);
+          // A complete statistics pack is only a candidate for its actual
+          // members. Detailed aim/event aliases still use their own archive;
+          // two different successful pages retain the strict uniqueness rule.
+          ambiguous=pointer?.ambiguous===true||Boolean(bulk&&indexed&&bulk.reference!==indexed.reference);
+          if(requireUnique&&ambiguous)throw new AgentRuntimeError('query_archive_ambiguous',422);
+          entry=bulk&&indexed?(Number(bulk.reference.slice(refPrefix.length))<Number(indexed.reference.slice(refPrefix.length))?bulk:indexed):bulk??indexed;
+        }
+        if(!entry)return null;return {query:publicQuery(entry.query),reference:entry.reference,result:clone(entry.result),...(ambiguous?{ambiguous:true}:{})};
       },
       async queryArchive({offset=0,limit=20}={}){if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>20)throw new AgentRuntimeError('invalid_query_archive',400);const total=record.turn.query_sequence??0,items=[];for(let index=offset+1;index<=Math.min(total,offset+limit);index++){const entry=await controller.restoreQuery(`turn:${record.turn.id}:g${record.turn.generation??0}:query:${index}`);if(entry)items.push(archiveSummary({...entry,bytes:encoder.encode(JSON.stringify(entry.result)).byteLength}));}return {source:clone(record.turn.source),items,pagination:{offset,limit,total_slots:total,next_offset:offset+limit<total?offset+limit:null},note:'Metadata indexes actual saved pages; a page or replay window ending never implies all raw match data was read.'};},
       async rememberSurveySummary(matchId,value){if(!/^[a-f0-9]{24}$/.test(matchId)||!plainValues(value))throw new AgentRuntimeError('invalid_query_archive',400);const path=readBase+'survey/'+matchId+'.json',payload={match_id:matchId,value:clone(value)},saved=await sealedWrite(path,payload);if(!saved){const old=await sealedLoad(path);if(JSON.stringify(old?.value?.value)!==JSON.stringify(value))throw new AgentRuntimeError('query_archive_conflict',503);}},
@@ -430,7 +447,7 @@ export function createAgentRuntime({store=createMemoryAgentStore(),owner,now=()=
       async stageArtifact(value){
         if(value===null){record.turn.stage_artifact=null;record.turn.sequence++;await save();return {clear:true,source:clone(record.turn.source)};}
         if(!plainValues(value)||!ownKeys(value,['source','visualizations','evidence'])||!plainValues(value.source)||!ownKeys(value.source,['source_revision','generated_at','content_sha256'])||!sameSource(safeSource(value.source),record.turn.source)||!Array.isArray(value.visualizations)||!value.visualizations.length||value.visualizations.length>2||!value.visualizations.every(validateBoundAgentVisualization))throw new AgentRuntimeError('invalid_stage_artifact',400);
-        const known=currentEvidence(record.turn),refs=new Set(),prefix=`turn:${record.turn.id}:g${record.turn.generation??0}:query:`;for(const visual of value.visualizations){for(const ref of visual.evidence_refs){if(!known.has(ref))throw new AgentRuntimeError('activity_evidence_invalid',400);refs.add(ref);}for(const proof of visual.provenance){let query=(record.turn.work?.queries??[]).find(entry=>entry.reference===proof.query_ref);if(!proof.query_ref.startsWith(prefix)||!/^\d+$/.test(proof.query_ref.slice(prefix.length))||!query)throw new AgentRuntimeError('invalid_stage_artifact',400);if(proof.path!=null){query=await controller.restoreQuery(proof.query_ref,{requireUnique:true});if(!query)throw new AgentRuntimeError('invalid_stage_artifact',400);}let expected;try{expected=projectAgentVisualBindingData(query.result,proof.path);if(proof.path!=null){const originalSource=projectAgentVisualBindingData(query.result,['source']);for(const key of ['source_revision','generated_at','content_sha256'])if(record.turn.source[key]&&(key!=='content_sha256'||originalSource[key]!=null)&&originalSource[key]!==record.turn.source[key])throw Error();}}catch{throw new AgentRuntimeError('invalid_stage_artifact',400);}if(JSON.stringify(visual.data[proof.name])!==JSON.stringify(expected))throw new AgentRuntimeError('invalid_stage_artifact',400);}}
+        const known=currentEvidence(record.turn),refs=new Set(),prefix=`turn:${record.turn.id}:g${record.turn.generation??0}:query:`;for(const visual of value.visualizations){for(const ref of visual.evidence_refs){if(!known.has(ref))throw new AgentRuntimeError('activity_evidence_invalid',400);refs.add(ref);}for(const proof of visual.provenance){let query=(record.turn.work?.queries??[]).find(entry=>entry.reference===proof.query_ref);if(!proof.query_ref.startsWith(prefix)||!/^\d+$/.test(proof.query_ref.slice(prefix.length))||!query)throw new AgentRuntimeError('invalid_stage_artifact',400);if(proof.path!=null){query=await controller.restoreQuery(proof.query_ref,{requireUnique:true});if(!query)throw new AgentRuntimeError('invalid_stage_artifact',400);}let expected;try{expected=projectAgentVisualBindingData(query.result,proof.path);if(proof.path!=null||Object.hasOwn(proof,'source')){const originalSource=projectAgentVisualBindingData(query.result,['source']);if(Object.hasOwn(proof,'source')&&!sameSource(proof.source,safeSource(originalSource)))throw Error();for(const key of ['source_revision','generated_at','content_sha256'])if(record.turn.source[key]&&(key!=='content_sha256'||originalSource[key]!=null)&&originalSource[key]!==record.turn.source[key])throw Error();}}catch{throw new AgentRuntimeError('invalid_stage_artifact',400);}if(JSON.stringify(visual.data[proof.name])!==JSON.stringify(expected))throw new AgentRuntimeError('invalid_stage_artifact',400);}}
         const evidence=[...refs].map(id=>{const entry=known.get(id),query=publicQuery(entry.query);return {id,resource:query.resource,query,query_ref:entry.reference,label:id,...(query.match_id?{match_id:query.match_id}:{}),...(query.round_number?{round_number:query.round_number}:{})};});
         const artifact={source:clone(record.turn.source),visualizations:clone(value.visualizations),evidence};if(encoder.encode(JSON.stringify(artifact)).byteLength>256*1024)throw new AgentRuntimeError('invalid_stage_artifact',400);const signature=await dataHash(artifact);if(signature!==record.turn.last_stage_signature){record.turn.stage_revision=(record.turn.stage_revision??0)+1;record.turn.last_stage_signature=signature;}record.turn.stage_artifact=artifact;record.turn.sequence++;await save();return clone(artifact);
       },
@@ -468,7 +485,7 @@ export function createAgentRuntime({store=createMemoryAgentStore(),owner,now=()=
         }catch(error){for(const key of Object.keys(record.turn))delete record.turn[key];Object.assign(record.turn,previous);record.revision=previousRevision;record.updated_at=previousUpdated;throw error;}
         const state=publicState().task;return {plan:state.plan,plan_revision:state.plan_revision,plan_revisions:state.plan_revisions,plan_overview:state.plan_overview,workflow:state.workflow,status:'recorded',edits_applied:args.edits.length,note:'One atomic graph revision; ready steps still require successful evidence-backed operations.'};
       },
-      async observed(query,reference){record.turn.events=[...(record.turn.events??[]),{type:'query',resource:query.resource,status:'complete',reference}].slice(-12);noteObservedRead(record.turn,query,reference);refreshPlan(record.turn);},
+      async observed(query,reference){const clean=publicQuery(query);record.turn.events=[...(record.turn.events??[]),{type:'query',resource:clean.resource,status:'complete',reference}].slice(-12);noteObservedRead(record.turn,clean,reference);refreshPlan(record.turn);},
       async reportFailure(category,values){const issues=(Array.isArray(values)?values:[]).slice(0,8).filter(issue=>/^[a-z_]{1,40}$/.test(issue?.code??'')&&/^analysis(?:\.(?:headline|summary|findings|training|limitations|visualizations|title|assessment|priority|evidence_refs|skill|exercise|target|minutes|[0-9]{1,3}))*$/.test(issue?.path??'')).map(issue=>({code:issue.code,path:issue.path}));record.turn.events=[...(record.turn.events??[]),{type:'validation',status:'failed',label:'分析报告校验',category,...(issues.length?{issues}:{})}].slice(-12);},
       async visualCheck(valid,category,details={}){recordVisualCheck(record.turn,valid);const issues=(Array.isArray(details.issues)?details.issues:[]).slice(0,8).filter(issue=>/^[a-z_]{1,40}$/.test(issue?.code??'')&&/^visualizations(?:\.[01])?(?:\.(?:document|data|path|title|description|evidence_refs|dataBindings|params|lets|nodes|actions|assumptions|version|kind|name|type|label|value|min|max|step|options|expr|id|parent|tag|attrs|style|text|bindings|when|repeat|action|target|as|index|evidence_ref|[0-9]{1,3}))*$/.test(issue?.path??'')).map(issue=>({code:issue.code,path:issue.path}));record.turn.events=[...(record.turn.events??[]),{type:'validation',status:valid?'complete':'failed',label:details.stage==='final'?'交互文档校验':'交互文档预检',...(category?{category}:{}),...(issues.length?{issues}:{})}].slice(-12);},
       async toolFailure(resource,code,query){record.turn.events=[...(record.turn.events??[]),{type:'query',resource,status:'failed',code}].slice(-12);if(QUERY_RESOURCES.includes(resource)){if(!Array.isArray(record.turn.plan_failures))record.turn.plan_failures=[];record.turn.plan_failures.push({resource,code:typeof code==='string'&&/^[a-z_]{1,64}$/.test(code)?code:'data_not_available',...(query?{query:clone(query)}:{})});record.turn.plan_failures=record.turn.plan_failures.slice(-16);refreshPlan(record.turn);}},

@@ -38,6 +38,11 @@ function manifestKey(owner,id){return `${root(owner)}jobs/${id}/manifest.json`;}
 function completeKey(owner,id){return `${root(owner)}jobs/${id}/complete.json`;}
 function partKey(owner,id,artifact,index){return `${root(owner)}jobs/${id}/parts/${artifact}/${String(index).padStart(5,'0')}`;}
 function clipKey(owner,sha,fingerprint){return `${root(owner)}clips/${sha}/${fingerprint}.json`;}
+function analysisClipKey(owner,sha,analysis,fingerprint){return `${root(owner)}clips/${sha}/${analysis}/${fingerprint}.json`;}
+async function nativeAnalysisDigest(match,summary=match){
+  const analysis=summary.detail_ref?.content_sha256??await hash(encoder.encode(JSON.stringify(match)));
+  if(!SHA.test(analysis??''))fail('native_analysis_unavailable',503);return analysis;
+}
 const fingerprint=clip=>hash(encoder.encode(JSON.stringify([clip.burst_id,clip.start_tick,clip.finish_tick])));
 const publicJob=(job,state='awaiting_local_render')=>({version:NATIVE_VERSION,job_id:job.job_id,match_id:job.match_id,source_revision:job.source_revision,analysis_sha256:job.analysis_sha256,source_sha256:job.plan.source_sha256,state,created_at:new Date(job.created_ms).toISOString(),expires_at:new Date(job.expires_ms).toISOString(),plan:job.plan,demo:job.demo});
 
@@ -191,6 +196,31 @@ async function readNativeArtifact(store,owner,job,artifact){
   if(await hash(result)!==artifact.sha256)fail('native_artifact_digest_mismatch');return result;
 }
 
+async function readVerifiedNativeClip({owner,store,match,clip,analysis,source,tickrate}){
+  const base={clip_id:clip.burst_id,round_number:clip.round_number,start_tick:clip.start_tick,finish_tick:clip.finish_tick,evidence_ref:clip.evidence_id??`match:${match.match_id}:r${clip.round_number}:aim:${clip.burst_id}`};
+  try{
+    const key=await fingerprint(clip),cached=await store.getJSON(analysisClipKey(owner,source,analysis,key))??await store.getJSON(clipKey(owner,source,key));
+    if(!cached)return {item:{...base,state:'not_rendered'}};
+    if(cached.analysis_sha256!=null&&cached.analysis_sha256!==analysis)fail('native_analysis_mismatch');
+    if(cached.match_id!==match.match_id||cached.source_sha256!==source||cached.burst_id!==clip.burst_id||cached.state!=='rendered'||!UUID.test(cached.job_id??'')||!ARTIFACT.test(cached.clip_id??''))fail('native_capture_identity_mismatch');
+    const job=await store.getJSON(jobKey(owner,cached.job_id));
+    if(!job||job.version!==NATIVE_VERSION||job.owner!==owner||job.job_id!==cached.job_id||job.match_id!==match.match_id||job.plan?.version!==NATIVE_VERSION||job.plan?.kind!=='cs2_engine_capture_plan'||job.plan?.owner_steamid!==owner||job.plan?.source_sha256!==source||job.plan?.tickrate!==tickrate||job.plan?.fps!==120||!Array.isArray(job.plan?.clips)||job.plan.clips.length<1||job.plan.clips.length>MAX_CLIPS)fail('native_capture_identity_mismatch');
+    if(job.analysis_sha256!==analysis)fail('native_analysis_mismatch');
+    const planned=job.plan.clips.find(value=>value.clip_id===cached.clip_id&&value.burst_id===clip.burst_id);
+    if(!planned||planned.start_tick!==clip.start_tick||planned.finish_tick!==clip.finish_tick)fail('native_capture_fingerprint_mismatch');
+    const done=await store.getJSON(completeKey(owner,job.job_id));
+    if(!done||done.state!=='rendered'||done.job_id!==job.job_id||done.match_id!==match.match_id||done.source_sha256!==source||done.analysis_sha256!==analysis||!Array.isArray(done.clips))fail('native_capture_not_complete');
+    const receipt=checkedReceipt(await store.getJSON(manifestKey(owner,job.job_id)),job),recorded=receipt.clips.find(value=>value.clip_id===planned.clip_id),completed=done.clips.find(value=>value.clip_id===planned.clip_id&&value.burst_id===clip.burst_id);
+    if(done.clips.length!==receipt.clips.length||!recorded||!completed||completed.state!=='rendered'||completed.job_id!==job.job_id||JSON.stringify(done.engine)!==JSON.stringify(receipt.engine)||JSON.stringify(cached.artifacts)!==JSON.stringify(recorded.artifacts)||JSON.stringify(completed.artifacts)!==JSON.stringify(recorded.artifacts))fail('native_capture_manifest_mismatch');
+    const alignment={start_tick:recorded.first_frame_tick,requested_start_tick:recorded.start_tick,finish_tick:recorded.finish_tick,tickrate,fps:recorded.fps,video_start_seconds:0};
+    if(JSON.stringify(cached.alignment)!==JSON.stringify(alignment)||JSON.stringify(completed.alignment)!==JSON.stringify(alignment)||completed.validation?.status!=='passed'||completed.validation.kind!=='native_engine_frames'||completed.validation.frame_count!==recorded.frame_count||completed.validation.first_tick!==recorded.first_frame_tick||!Number.isFinite(completed.validation.last_tick)||completed.validation.last_tick<clip.finish_tick-2||completed.validation.last_tick>clip.finish_tick)fail('native_capture_validation_mismatch');
+    const validation={status:'passed',kind:'native_engine_frames',frame_count:recorded.frame_count,first_tick:recorded.first_frame_tick,last_tick:completed.validation.last_tick};
+    const item={...base,state:'rendered',fps:recorded.fps,width:recorded.width,height:recorded.height,frame_count:recorded.frame_count,first_frame_tick:recorded.first_frame_tick,first_frame_time:recorded.first_frame_time,source_sha256:source,analysis_sha256:analysis,rendered_at:typeof done.rendered_at==='string'&&Number.isFinite(Date.parse(done.rendered_at))?done.rendered_at:null,engine:{renderer:receipt.engine.renderer,capture_adapter:receipt.engine.capture_adapter,game_build:receipt.engine.game_build,hlae_version:receipt.engine.hlae_version},validation};
+    return {item,job,recorded,completed};
+  }catch(error){return {item:{...base,state:'unavailable',reason:error instanceof NativeError?error.code:'native_capture_unavailable'}};}
+
+}
+
 /** Read current-owner completed capture metadata and observed frame evidence.
  * Enumerates only current analysis windows; never lists storage or reads video. */
 export function createNativeQueryReader({owner,store:fixedStore,bucket}={}){
@@ -207,32 +237,9 @@ export function createNativeQueryReader({owner,store:fixedStore,bucket}={}){
     const source=match.provenance?.source_sha256??match.provenance?.sha256,tickrate=match.provenance?.tickrate;
     if(!/^\d{17}$/.test(owner??'')||!SHA.test(source??'')||!Number.isFinite(tickrate)||tickrate<16||tickrate>256)return empty(input,'unavailable','native_source_identity_unavailable');
     if(!store)return empty(input,'unavailable','native_storage_unavailable');
-    const analysis=match.detail_ref?.content_sha256??await hash(encoder.encode(JSON.stringify(match)));
-    if(!SHA.test(analysis??''))return empty(input,'unavailable','native_analysis_unavailable');
+    let analysis;try{analysis=await nativeAnalysisDigest(match);}catch{return empty(input,'unavailable','native_analysis_unavailable');}
     const evidenceRef=clip=>clip.evidence_id??`match:${match.match_id}:r${clip.round_number}:aim:${clip.burst_id}`;
-    const baseClip=clip=>({clip_id:clip.burst_id,round_number:clip.round_number,start_tick:clip.start_tick,finish_tick:clip.finish_tick,evidence_ref:evidenceRef(clip)});
-    const readClip=async clip=>{
-      const base=baseClip(clip);
-      try{
-        const cached=await store.getJSON(clipKey(owner,source,await fingerprint(clip)));
-        if(!cached)return {item:{...base,state:'not_rendered'}};
-        if(cached.match_id!==match.match_id||cached.source_sha256!==source||cached.burst_id!==clip.burst_id||cached.state!=='rendered'||!UUID.test(cached.job_id??'')||!ARTIFACT.test(cached.clip_id??''))fail('native_capture_identity_mismatch');
-        const job=await store.getJSON(jobKey(owner,cached.job_id));
-        if(!job||job.version!==NATIVE_VERSION||job.owner!==owner||job.job_id!==cached.job_id||job.match_id!==match.match_id||job.plan?.version!==NATIVE_VERSION||job.plan?.kind!=='cs2_engine_capture_plan'||job.plan?.owner_steamid!==owner||job.plan?.source_sha256!==source||job.plan?.tickrate!==tickrate||job.plan?.fps!==120||!Array.isArray(job.plan?.clips)||job.plan.clips.length<1||job.plan.clips.length>MAX_CLIPS)fail('native_capture_identity_mismatch');
-        if(job.analysis_sha256!==analysis)fail('native_analysis_mismatch');
-        const planned=job.plan.clips.find(value=>value.clip_id===cached.clip_id&&value.burst_id===clip.burst_id);
-        if(!planned||planned.start_tick!==clip.start_tick||planned.finish_tick!==clip.finish_tick)fail('native_capture_fingerprint_mismatch');
-        const done=await store.getJSON(completeKey(owner,job.job_id));
-        if(!done||done.state!=='rendered'||done.job_id!==job.job_id||done.match_id!==match.match_id||done.source_sha256!==source||done.analysis_sha256!==analysis||!Array.isArray(done.clips))fail('native_capture_not_complete');
-        const receipt=checkedReceipt(await store.getJSON(manifestKey(owner,job.job_id)),job),recorded=receipt.clips.find(value=>value.clip_id===planned.clip_id),completed=done.clips.find(value=>value.clip_id===planned.clip_id&&value.burst_id===clip.burst_id);
-        if(done.clips.length!==receipt.clips.length||!recorded||!completed||completed.state!=='rendered'||completed.job_id!==job.job_id||JSON.stringify(done.engine)!==JSON.stringify(receipt.engine)||JSON.stringify(cached.artifacts)!==JSON.stringify(recorded.artifacts)||JSON.stringify(completed.artifacts)!==JSON.stringify(recorded.artifacts))fail('native_capture_manifest_mismatch');
-        const alignment={start_tick:recorded.first_frame_tick,requested_start_tick:recorded.start_tick,finish_tick:recorded.finish_tick,tickrate,fps:recorded.fps,video_start_seconds:0};
-        if(JSON.stringify(cached.alignment)!==JSON.stringify(alignment)||JSON.stringify(completed.alignment)!==JSON.stringify(alignment)||completed.validation?.status!=='passed'||completed.validation.kind!=='native_engine_frames'||completed.validation.frame_count!==recorded.frame_count||completed.validation.first_tick!==recorded.first_frame_tick||!Number.isFinite(completed.validation.last_tick)||completed.validation.last_tick<clip.finish_tick-2||completed.validation.last_tick>clip.finish_tick)fail('native_capture_validation_mismatch');
-        const validation={status:'passed',kind:'native_engine_frames',frame_count:recorded.frame_count,first_tick:recorded.first_frame_tick,last_tick:completed.validation.last_tick};
-        const item={...base,state:'rendered',fps:recorded.fps,width:recorded.width,height:recorded.height,frame_count:recorded.frame_count,first_frame_tick:recorded.first_frame_tick,first_frame_time:recorded.first_frame_time,source_sha256:source,analysis_sha256:analysis,rendered_at:typeof done.rendered_at==='string'&&Number.isFinite(Date.parse(done.rendered_at))?done.rendered_at:null,engine:{renderer:receipt.engine.renderer,capture_adapter:receipt.engine.capture_adapter,game_build:receipt.engine.game_build,hlae_version:receipt.engine.hlae_version},validation};
-        return {item,job,recorded};
-      }catch(error){return {item:{...base,state:'unavailable',reason:error instanceof NativeError?error.code:'native_capture_unavailable'}};}
-    };
+    const readClip=clip=>readVerifiedNativeClip({owner,store,match,clip,analysis,source,tickrate});
     if(input.resource==='native_captures'){
       const selected=candidates.slice(input.offset,input.offset+input.limit),items=[];
       for(const clip of selected)items.push((await readClip(clip)).item);
@@ -278,7 +285,7 @@ export function createNativeJobHandler({loadSnapshot,loadMatch,getSource=createN
           const match=loadMatch?await loadMatch(summary,env):summary,plan=createNativePlan(match,owner,input.burst_ids);
           const source_revision=snapshot.delivery?.source_revision??snapshot._cs2_storage?.source_revision??null;
           if(source_revision!=null&&!REV.test(source_revision))fail('invalid_native_source_revision',503);
-          const analysis_sha256=summary.detail_ref?.content_sha256??await hash(encoder.encode(JSON.stringify(match)));
+          const analysis_sha256=await nativeAnalysisDigest(match,summary);
           let demo=await getSource(match,{...env,NATIVE_OWNER_STEAM_ID:owner});
           if(!demo)demo={status:'source_unavailable',sha256:plan.source_sha256,bytes:match.provenance?.source_bytes??match.provenance?.bytes??null,compression:'none'};
           else if(demo.sha256!==plan.source_sha256||demo.status!=='available'||nativeDemoURL(demo.url)!==demo.url)fail('native_demo_source_mismatch',409);
@@ -305,7 +312,7 @@ export function createNativeJobHandler({loadSnapshot,loadMatch,getSource=createN
         }
         const result={job_id:job.job_id,match_id:job.match_id,state:'rendered',rendered_at:new Date(now()).toISOString(),source_sha256:job.plan.source_sha256,analysis_sha256:job.analysis_sha256,engine:receipt.engine,clips};
         await store.claimJSON(completeKey(owner,job.job_id),result);
-        for(const clip of clips){const planned=job.plan.clips.find(c=>c.clip_id===clip.clip_id);await store.claimJSON(clipKey(owner,job.plan.source_sha256,await fingerprint(planned)),{...clip,match_id:job.match_id,source_sha256:job.plan.source_sha256});}
+        for(const clip of clips){const planned=job.plan.clips.find(c=>c.clip_id===clip.clip_id),key=await fingerprint(planned),cached={...clip,match_id:job.match_id,source_sha256:job.plan.source_sha256,analysis_sha256:job.analysis_sha256};await store.claimJSON(analysisClipKey(owner,job.plan.source_sha256,job.analysis_sha256,key),cached);await store.claimJSON(clipKey(owner,job.plan.source_sha256,key),cached);}
         return json(result,201);
       }
       if(request.method==='PUT'){
@@ -330,12 +337,13 @@ export function createNativeJobHandler({loadSnapshot,loadMatch,getSource=createN
         const summary=snapshot.matches.find(match=>match.match_id===id);if(!summary)fail('native_match_not_found',404);
         const requested=url.searchParams.getAll('burst_id');if(requested.length>MAX_CLIPS||requested.some(id=>!BURST.test(id)))fail('invalid_native_clip_selection',400);
         const match=loadMatch?await loadMatch(summary,env):summary;
-        const candidates=windows(match).filter(clip=>!requested.length||requested.includes(clip.burst_id)).slice(0,MAX_CLIPS),source=match.provenance?.source_sha256??match.provenance?.sha256;
+        const candidates=windows(match).filter(clip=>!requested.length||requested.includes(clip.burst_id)).slice(0,MAX_CLIPS),source=match.provenance?.source_sha256??match.provenance?.sha256,tickrate=match.provenance?.tickrate,analysis=await nativeAnalysisDigest(match,summary);
         const clips=await Promise.all(candidates.map(async clip=>{
-          const cached=SHA.test(source??'')?await store.getJSON(clipKey(owner,source,await fingerprint(clip))):null;
-          return cached&&cached.match_id===id&&cached.source_sha256===source?cached:{burst_id:clip.burst_id,state:'not_rendered'};
+          if(!SHA.test(source??'')||!Number.isFinite(tickrate)||tickrate<16||tickrate>256)return {burst_id:clip.burst_id,state:'unavailable',reason:'native_source_identity_unavailable'};
+          const checked=await readVerifiedNativeClip({owner,store,match,clip,analysis,source,tickrate});
+          return checked.recorded?{...checked.completed,match_id:id,source_sha256:source,analysis_sha256:analysis}: {burst_id:clip.burst_id,state:checked.item.state,...(checked.item.reason?{reason:checked.item.reason}:{})};
         }));
-        return json({status:'ok',match_id:id,clips,max_batch_clips:MAX_CLIPS});
+        return json({status:'ok',match_id:id,analysis_sha256:analysis,clips,max_batch_clips:MAX_CLIPS});
       }
       if([...url.searchParams.keys()].some(key=>!['job_id','artifact_id'].includes(key))||url.searchParams.getAll('job_id').length!==1||url.searchParams.getAll('artifact_id').length>1)fail('invalid_native_request',400);
       const job=await readJob(url.searchParams.get('job_id')),done=await store.getJSON(completeKey(owner,job.job_id)),id=url.searchParams.get('artifact_id');

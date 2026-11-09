@@ -33,7 +33,7 @@ configure 用于生成当前安装配置和空白 Dashboard。不要将已含其
 
 ## 3. 安全设置 Actions Secrets
 
-按 [配置清单](CONFIGURATION.md) 在当前私有仓库设置 Secrets。`STEAMID64` 必填；使用 Steam GC 发现及下载时还需 `STEAM_REFRESH_TOKEN`。Leetify 和 Steam Web API 的补充凭据不是 GC 登录的替代品。
+按 [配置清单](CONFIGURATION.md) 在当前私有仓库设置 Secrets。`STEAMID64` 必填；使用 Steam GC 发现及下载时还需 `STEAM_REFRESH_TOKEN`。Leetify 和 Steam Web API 的补充凭据不是 GC 登录的替代品。模板默认跳过可选 Leetify 请求、保留 Steam 发现；需要 Leetify 补充时设置仓库 Variable `CS2_LEETIFY_ENABLED=true`。
 
 Steam refresh token 通过一次性扫码生成。在本人控制的本机终端或 Codespace 中运行：
 

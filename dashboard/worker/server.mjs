@@ -264,7 +264,7 @@ export function makeWorker({page,css,client,playersClient='',playersCss='',coach
             if(rpc.params.name==='read_data_catalog' && (!args || typeof args!=='object' || Array.isArray(args) || Object.keys(args).length))return failure(-32602,'Invalid arguments');
             const saved=await readStored(env),snapshot=saved?.value.snapshot||initial;
             try {
-              const delivery={source_revision:saved?.value.source_revision??null,ingested_at:saved?.value.ingested_at??null},options=queryOptions(env);
+              const delivery={source_revision:saved?.value.source_revision??null,content_sha256:saved?.value.content_sha256??null,ingested_at:saved?.value.ingested_at??null},options=queryOptions(env);
               let result;
               if(rpc.params.name==='read_raw_data_batch'){
                 if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).length!==1||!Array.isArray(args.queries)||!args.queries.length||args.queries.length>6||new TextEncoder().encode(JSON.stringify(args)).byteLength>16*1024)throw new QueryError('invalid_raw_batch');
@@ -334,7 +334,7 @@ export function makeWorker({page,css,client,playersClient='',playersCss='',coach
         if(url.pathname==='/api/query') {
           try {
             const input=await parseQueryRequest(request),saved=await readStored(env),snapshot=saved?.value.snapshot||initial;
-            return json(await runQuery(snapshot,input,{source_revision:saved?.value.source_revision??null,ingested_at:saved?.value.ingested_at??null},queryOptions(env)));
+            return json(await runQuery(snapshot,input,{source_revision:saved?.value.source_revision??null,content_sha256:saved?.value.content_sha256??null,ingested_at:saved?.value.ingested_at??null},queryOptions(env)));
           } catch(error) {return json(queryError(error),error instanceof QueryError?error.status:503);}
         }
         if (url.pathname==='/api/ingest' && request.method==='POST') {

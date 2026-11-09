@@ -129,6 +129,11 @@ function ownDataDescriptor(value,key){
   if(!value||typeof value!=='object'||!(Array.isArray(value)?[Array.prototype]:[Object.prototype,null]).includes(Object.getPrototypeOf(value)))fail();
   const descriptor=Object.getOwnPropertyDescriptor(value,key);if(descriptor&&!Object.hasOwn(descriptor,'value'))fail();return descriptor;
 }
+function bindingSource(source){
+  if(source==null)return null;const result={};
+  for(const key of ['source_revision','generated_at','content_sha256']){const value=ownDataDescriptor(source,key)?.value??null;if(value!==null&&!string(value,240))fail();result[key]=value;}
+  return result;
+}
 // A declared projection is an exact subtree of the immutable query result.
 // Never execute getters, follow prototypes, flatten arrays or silently prune it.
 export function projectAgentVisualBindingData(result,path=null){
@@ -450,7 +455,11 @@ export function bindAgentVisualizations(candidates,{evidence,queryResults,source
       if(!cited.has(binding.evidence_ref))visualFailure('evidence_reference',index,'dataBindings');const entry=mapGet(evidence,binding.evidence_ref),queryRef=entry?.query_ref||(agentQueryReference.test(binding.evidence_ref)?binding.evidence_ref:null),result=queryRef?mapGet(queryResults,queryRef):undefined;
       if(!agentQueryReference.test(queryRef||'')||result===undefined)visualFailure('query_reference',index,'dataBindings');
       let cloned,originalSource;try{cloned=projectAgentVisualBindingData(result,binding.path);const descriptor=ownDataDescriptor(result,'source');originalSource=descriptor?cloneData(descriptor.value):undefined;}catch(error){const code=error?.visual_data_code==='data_path_invalid'?'data_path_invalid':'bound_data_invalid';visualFailure('bound_data',index,'data',[{code,path:`visualizations.${index}.document.dataBindings.${bindingIndex}.path`,expected:code==='data_path_invalid'?'Select an existing own-field subtree from this exact query result. Statistics charts normally use path=["items"].':'Selected data must satisfy the existing scalar, structure and clone budgets. Use a narrower explicit path or an exact statistics projection; getters and prototype access are forbidden.'}]);}for(const key of ['source_revision','generated_at','content_sha256'])if(source?.[key]&&(key!=='content_sha256'||originalSource?.[key]!=null)&&originalSource?.[key]!==source[key])visualFailure('source_mismatch',index,'dataBindings');
-      data[binding.name]=cloned;provenance.push({name:binding.name,evidence_ref:binding.evidence_ref,query_ref:queryRef,...(Object.hasOwn(binding,'path')?{path:bindingPathCopy(binding.path)}:{})});
+      // A projection may omit source entirely. Its compact attestation comes
+      // only from the server-held original result, never the candidate or the
+      // current-context source substituted for an unknown historical field.
+      const observedSource=bindingSource(originalSource);
+      data[binding.name]=cloned;provenance.push({name:binding.name,evidence_ref:binding.evidence_ref,query_ref:queryRef,...(Object.hasOwn(binding,'path')?{path:bindingPathCopy(binding.path)}:{}),...(observedSource?{source:observedSource}:{})});
     }
     const dataBytes=bytes(data);if(dataBytes>AGENT_VISUAL_LIMITS.dataBytes)visualFailure('bound_data',index,'data',[{code:'data_budget_exceeded',path:`visualizations.${index}.data`,maximum_bytes:AGENT_VISUAL_LIMITS.dataBytes,actual_bytes:dataBytes,expected:'Combined bound data must fit 65536 UTF-8 bytes. Declare path=["items"] for statistics rows, or bind other required subtrees explicitly. Original query archives and evidence references remain unchanged.'}]);
     const visual={title:candidate.title,description:candidate.description,evidence_refs:[...candidate.evidence_refs],document:JSON.parse(JSON.stringify(candidate.document)),data,provenance};
@@ -465,6 +474,6 @@ export function validateBoundAgentVisualization(visual){
     if(!wrapperValid(visual,true)||!visual.data||typeof visual.data!=='object'||Array.isArray(visual.data)||bytes(visual.data)>AGENT_VISUAL_LIMITS.dataBytes||!Array.isArray(visual.provenance)||visual.provenance.length!==visual.document.dataBindings.length||Object.keys(visual.data).length!==visual.document.dataBindings.length)return false;
     cloneData(visual.data);
     const cited=new Set(visual.evidence_refs);
-    return visual.document.dataBindings.every((binding,index)=>{const proof=visual.provenance[index];return cited.has(binding.evidence_ref)&&own(visual.data,binding.name)&&keys(proof,['name','evidence_ref','query_ref',...(Object.hasOwn(binding,'path')?['path']:[])])&&proof.name===binding.name&&proof.evidence_ref===binding.evidence_ref&&agentQueryReference.test(proof.query_ref)&&JSON.stringify(proof.path)===JSON.stringify(binding.path);})&&visual.document.actions.every(action=>cited.has(action.evidence_ref));
+    return visual.document.dataBindings.every((binding,index)=>{const proof=cloneData(ownDataDescriptor(visual.provenance,String(index))?.value),withSource=own(proof,'source');return cited.has(binding.evidence_ref)&&own(visual.data,binding.name)&&keys(proof,['name','evidence_ref','query_ref',...(Object.hasOwn(binding,'path')?['path']:[]),...(withSource?['source']:[])])&&(!withSource||keys(proof.source,['source_revision','generated_at','content_sha256'])&&bindingSource(proof.source)!==null)&&proof.name===binding.name&&proof.evidence_ref===binding.evidence_ref&&agentQueryReference.test(proof.query_ref)&&JSON.stringify(proof.path)===JSON.stringify(binding.path);})&&visual.document.actions.every(action=>cited.has(action.evidence_ref));
   }catch{return false;}
 }

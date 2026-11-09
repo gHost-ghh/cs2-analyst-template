@@ -117,7 +117,7 @@ def sync_steam_codes() -> tuple[set[str], bool]:
     keys = ["STEAM_WEB_API_KEY", "STEAM_MATCH_AUTH_CODE", "STEAM_KNOWNCODE"]
     present = [bool(os.getenv(k, "").strip()) for k in keys]
     if not any(present):
-        print("Steam code discovery not configured: will sync Leetify only (coverage unknown).")
+        print("Steam sharing-code discovery not configured; GC/Demo discovery is handled separately (coverage unknown).")
         return set(), False
     if not all(present):
         raise RuntimeError("Steam discovery needs all three secrets: STEAM_WEB_API_KEY, STEAM_MATCH_AUTH_CODE, STEAM_KNOWNCODE")
@@ -340,9 +340,14 @@ def main():
         raise RuntimeError("STEAMID64 differs from the account already stored in this repository; use a separate repository")
     write_json_if_changed(account_path, {"steamid64": steamid})
     codes, steam_enabled = sync_steam_codes()
-    matches, _ = sync_leetify(steamid)
+    skip_leetify = os.getenv("CS2_SKIP_LEETIFY", "").strip().lower() == "true"
+    if skip_leetify:
+        matches = load_matches()
+        print("Leetify enrichment disabled; keeping cached records. Steam discovery remains enabled when configured.")
+    else:
+        matches, _ = sync_leetify(steamid)
     build_report(matches, codes, steam_enabled, steamid)
-    write_json_if_changed(REPORTS / "sync_status.json", {"last_success_at": iso_now(), "recorded_valve_matches": len(matches)})
+    write_json_if_changed(REPORTS / "sync_status.json", {"last_success_at": iso_now(), "recorded_valve_matches": len(matches), "leetify_status": "disabled" if skip_leetify else "enabled"})
     print(f"Sync complete. {len(matches)} Valve matches in database. See reports/latest.md")
 
 

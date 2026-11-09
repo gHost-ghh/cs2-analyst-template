@@ -27,6 +27,8 @@
 
 仓库 Variable `CS2_SYNC_ENABLED` 默认为未设置；配置完成后设为字符串 `true` 才允许运行同步 job。初始模板只有 `workflow_dispatch`，不包含自动 push 或 cron 触发；先手动验收，再按 [安装指南](AGENT_SETUP.md) 添加本人需要的 schedule。
 
+可选 Variable `CS2_LEETIFY_ENABLED` 默认未设置：模板工作流将 `CS2_SKIP_LEETIFY=true`，保留 Steam 分享代码发现、GC 与 Demo 流程，仅沿用已有 Leetify 缓存，不请求 Leetify。本人已注册 Leetify 并需要补充统计时，再将此 Variable 设为 `true`。本地纯 Demo 安装同样可设进程环境 `CS2_SKIP_LEETIFY=true`。不设置这个进程变量时，原脚本仍保留既有 Leetify 默认行为。
+
 另一个可选 Variable 是 `CS2_DEMO_ALLOWED_HOSTS`：仅列精确、受信任的额外 HTTPS 域名，用逗号分隔；默认 Valve replay 域名无需添加。不要设置通配符或为了通过测试允许任意 URL。
 
 ## Sites 安全运行环境

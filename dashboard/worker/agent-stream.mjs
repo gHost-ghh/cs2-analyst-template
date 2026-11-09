@@ -1,4 +1,5 @@
 import {validateBoundAgentVisualization} from '../shared/agent-visual.mjs';
+import {normalizeQueryInput} from './query.mjs';
 // Provider SSE stays private. Only explicitly typed application events cross
 // this boundary. Documented DeepSeek reasoning text is opt-in at the adapter;
 // encrypted/unknown reasoning, raw tool arguments and provider errors stay private.
@@ -204,8 +205,16 @@ function safeArtifact(value,bound){
   if(!sameStreamSource(result.source,bound.source))invalidEvent();if(result.clear===true)return result;
   if(!Array.isArray(result.visualizations)||!result.visualizations.length||result.visualizations.length>2||!result.visualizations.every(validateBoundAgentVisualization)||!Array.isArray(result.evidence)||result.evidence.length>32)invalidEvent();
   const prefix=`turn:${bound.session.turn_id}:g`;for(const visual of result.visualizations)if(visual.provenance.some(proof=>!proof.query_ref.startsWith(prefix)||!/^\d+:query:[1-9]\d*$/.test(proof.query_ref.slice(prefix.length))))invalidEvent();
-  for(const visual of result.visualizations)for(const name of Object.keys(visual.data)){const observed=visual.data[name]?.source;if(!observed||['source_revision','generated_at'].some(key=>result.source[key]!=null&&observed[key]!==result.source[key]))invalidEvent();}
-  result.evidence=result.evidence.map(value=>{const item=publicRecord(value,['id','resource','query','query_ref','match_id','round_number','label'],{project:true});if(typeof item.id!=='string'||!item.id.length||item.id.length>240||!ACTIVITY_RESOURCES.includes(item.resource))invalidEvent();if(item.query!=null)item.query=safeActivityQuery(item.query);if(item.query_ref!=null&&(typeof item.query_ref!=='string'||!item.query_ref.length||item.query_ref.length>240))invalidEvent();if(item.match_id!=null&&!/^[a-f0-9]{24}$/.test(item.match_id)||item.round_number!=null&&(!Number.isSafeInteger(item.round_number)||item.round_number<1||item.round_number>100)||item.label!=null&&(typeof item.label!=='string'||item.label.length>240))invalidEvent();return item;});
+  for(const visual of result.visualizations)for(const proof of visual.provenance){
+    const observed=visual.data[proof.name]?.source,attested=Object.hasOwn(proof,'source')?publicSource(proof.source):null;
+    if(attested&&observed&&!sameStreamSource(attested,observed))invalidEvent();
+    if(attested&&sameStreamSource(attested,result.source))continue;
+    // Historical complete bindings carry their source in data. Keep that
+    // format readable without manufacturing a missing historical index hash;
+    // projected subtrees require a current-source attestation from the binder.
+    if(proof.path!=null||!observed||['source_revision','generated_at','content_sha256'].some(key=>result.source[key]!=null&&(key!=='content_sha256'||observed[key]!=null)&&observed[key]!==result.source[key]))invalidEvent();
+  }
+  result.evidence=result.evidence.map(value=>{const item=publicRecord(value,['id','resource','query','query_ref','match_id','round_number','label'],{project:true});if(typeof item.id!=='string'||!item.id.length||item.id.length>240||!ACTIVITY_RESOURCES.includes(item.resource))invalidEvent();if(item.query!=null)try{item.query=normalizeQueryInput(item.query,{defaults:false});}catch{invalidEvent();}if(item.query_ref!=null&&(typeof item.query_ref!=='string'||!item.query_ref.length||item.query_ref.length>240))invalidEvent();if(item.match_id!=null&&!/^[a-f0-9]{24}$/.test(item.match_id)||item.round_number!=null&&(!Number.isSafeInteger(item.round_number)||item.round_number<1||item.round_number>100)||item.label!=null&&(typeof item.label!=='string'||item.label.length>240))invalidEvent();return item;});
   const refs=new Set(result.evidence.map(item=>item.id));if(result.visualizations.some(visual=>visual.evidence_refs.some(ref=>!refs.has(ref))))invalidEvent();
   return result;
 }

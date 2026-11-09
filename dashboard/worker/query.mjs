@@ -44,7 +44,31 @@ export class QueryError extends Error {
 const own = (value,key) => value != null && typeof value === 'object' && Object.hasOwn(value,key);
 const list = value => Array.isArray(value) ? value : [];
 const number = value => Number.isFinite(value) ? value : 0;
-function validateInput(input) {
+// Query archives need the exact supplied selectors, while actual reads need
+// pagination defaults and required targets. Share all supplied-field rules.
+// Inspect descriptors before values: getters, custom prototypes, toJSON and
+// array hooks must never run while validating an in-process query object.
+function cloneQueryData(value,ancestors=new Set(),depth=0,budget={nodes:0}){
+  if(value===null||typeof value==='string'||typeof value==='boolean'||typeof value==='number'&&Number.isFinite(value))return value;
+  if(!value||typeof value!=='object'||depth>16||++budget.nodes>4096||ancestors.has(value))throw new QueryError('invalid_query');
+  const array=Array.isArray(value),prototype=Object.getPrototypeOf(value);
+  if(array?prototype!==Array.prototype:prototype!==Object.prototype&&prototype!==null)throw new QueryError('invalid_query');
+  const descriptors=Object.getOwnPropertyDescriptors(value),keys=Reflect.ownKeys(descriptors);
+  if(keys.some(key=>typeof key!=='string'||forbidden.has(key)||!own(descriptors[key],'value')||key!=='length'&&!descriptors[key].enumerable))throw new QueryError('invalid_query');
+  ancestors.add(value);let result;
+  if(array){
+    const length=descriptors.length?.value;
+    if(!Number.isSafeInteger(length)||length<0||length>1000||keys.length!==length+1||keys.some(key=>key!=='length'&&(!/^(?:0|[1-9]\d*)$/.test(key)||Number(key)>=length)))throw new QueryError('invalid_query');
+    result=[];for(let index=0;index<length;index++)result.push(cloneQueryData(descriptors[String(index)].value,ancestors,depth+1,budget));
+  }else{
+    result={};for(const key of keys){const item=descriptors[key].value;if(depth===0&&key!=='resource'&&item==null)continue;result[key]=cloneQueryData(item,ancestors,depth+1,budget);}
+  }
+  ancestors.delete(value);return result;
+}
+export function normalizeQueryInput(value,{defaults=true,partial=false}={}){
+  return validateInput(cloneQueryData(value),{defaults,partial});
+}
+function validateInput(input,{defaults=true,partial=false}={}) {
   if(!input || typeof input!=='object' || Array.isArray(input) || Object.keys(input).some(key=>!queryKeys.includes(key)))throw new QueryError('invalid_query');
   if(!QUERY_RESOURCES.includes(input.resource))throw new QueryError('unknown_resource');
   if(input.match_id != null && (typeof input.match_id!=='string' || !/^[a-f0-9]{24}$/.test(input.match_id)))throw new QueryError('invalid_match_id');
@@ -60,21 +84,22 @@ function validateInput(input) {
   if(input.source_revision!=null&&(typeof input.source_revision!=='string'||!/^[a-f0-9]{40,64}$/.test(input.source_revision)))throw new QueryError('invalid_source_revision');
   if(input.columns!=null&&(!Array.isArray(input.columns)||!input.columns.length||input.columns.length>32||new Set(input.columns).size!==input.columns.length||input.columns.some(field=>!validRawField(field))))throw new QueryError('invalid_raw_columns');
   if(input.filters!=null&&(!Array.isArray(input.filters)||input.filters.length>12||input.filters.some(filter=>!validRawFilter(filter))))throw new QueryError('invalid_raw_filters');
-  if(input.resource==='raw_rows'&&(!input.match_id||!input.raw_dataset))throw new QueryError(!input.match_id?'match_id_required':'raw_dataset_required');
-  if(rawResource&&input.match_id&&!input.raw_dataset)throw new QueryError('raw_dataset_required');
+  if(!partial&&input.resource==='raw_rows'&&(!input.match_id||!input.raw_dataset))throw new QueryError(!input.match_id?'match_id_required':'raw_dataset_required');
+  if(!partial&&rawResource&&input.match_id&&!input.raw_dataset)throw new QueryError('raw_dataset_required');
   if(rawResource&&new TextEncoder().encode(JSON.stringify(input)).byteLength>MAX_QUERY_BYTES)throw new QueryError('query_too_large',413);
   if(['native_captures','native_frames'].includes(input.resource)){
-    if(!input.match_id)throw new QueryError('match_id_required');
-    if(input.resource==='native_frames'&&!input.clip_id)throw new QueryError('clip_id_required');
+    if(!partial&&!input.match_id)throw new QueryError('match_id_required');
+    if(!partial&&input.resource==='native_frames'&&!input.clip_id)throw new QueryError('clip_id_required');
     if(input.clip_id!=null&&!/^[A-Za-z0-9:_-]{1,100}$/.test(input.clip_id))throw new QueryError('invalid_clip_id');
   }
-  return {...input,offset:input.offset??0,limit:input.limit??25};
+  return defaults?{...input,offset:input.offset??0,limit:input.limit??25}:input;
 }
 function validRawField(field){return typeof field==='string'&&field.length<=240&&field.split('.').length<=12&&field.split('.').every(key=>/^[A-Za-z0-9_:-]{1,100}$/.test(key)&&!forbidden.has(key)&&!/^(?:api_key|authorization|cookie|password|secret|access_token|refresh_token|data)$/i.test(key));}
 function rawPrimitive(value){return value===null||typeof value==='boolean'||typeof value==='number'&&Number.isFinite(value)||typeof value==='string'&&value.length<=256;}
 function validRawFilter(filter){return filter&&typeof filter==='object'&&!Array.isArray(filter)&&Object.keys(filter).length===3&&['field','op','value'].every(key=>own(filter,key))&&validRawField(filter.field)&&['eq','ne','lt','lte','gt','gte','in','exists'].includes(filter.op)&&(filter.op==='in'?Array.isArray(filter.value)&&filter.value.length<=32&&filter.value.every(rawPrimitive):filter.op==='exists'?typeof filter.value==='boolean':rawPrimitive(filter.value));}
 function source(snapshot,delivery={}) {
-  return {generated_at:snapshot.generated_at??null,source_revision:delivery.source_revision??snapshot.delivery?.source_revision??null,ingested_at:delivery.ingested_at??snapshot.delivery?.ingested_at??null,repository:snapshot.source?.repository??null,analysis_versions:[...new Set(list(snapshot.matches).map(match=>match.analysis_version).filter(Boolean))]};
+  const contentHash=delivery.content_sha256??snapshot.delivery?.content_sha256;
+  return {generated_at:snapshot.generated_at??null,source_revision:delivery.source_revision??snapshot.delivery?.source_revision??null,...(typeof contentHash==='string'&&/^[a-f0-9]{64}$/.test(contentHash)?{content_sha256:contentHash}:{}),ingested_at:delivery.ingested_at??snapshot.delivery?.ingested_at??null,repository:snapshot.source?.repository??null,analysis_versions:[...new Set(list(snapshot.matches).map(match=>match.analysis_version).filter(Boolean))]};
 }
 function ref(match,round,tail='') {
   return (match?`match:${match.match_id}`:'snapshot')+(round?`:r${round.round_number}`:'')+(tail?`:${tail}`:'');
@@ -234,8 +259,17 @@ function rawSafeCopy(value,path=[],omitted=[]){
   }return output;
 }
 function rawTuple(row,fields){return Array.isArray(row)?Object.fromEntries(row.map((value,index)=>[Array.isArray(fields)&&fields.length===row.length&&new Set(fields).size===fields.length&&fields.every(validRawField)?fields[index]:String(index),value])):row;}
+function rawFrameWindow(match,round,replay,input){
+  const playbackEnd=replay.playback_end_tick??replay.end_tick??round.end_tick,tickrate=match.replay?.tickrate??64;
+  if(!Number.isSafeInteger(round.start_tick)||!Number.isSafeInteger(round.end_tick)||round.start_tick<0||round.end_tick<round.start_tick||!Number.isSafeInteger(playbackEnd)||playbackEnd<round.end_tick||!Number.isFinite(tickrate)||tickrate<=0||tickrate>1024||replay.next_round_start_tick!=null&&(!Number.isSafeInteger(replay.next_round_start_tick)||playbackEnd>=replay.next_round_start_tick))throw new QueryError('frames_unavailable',422);
+  const requestedStart=input.tick_from??round.start_tick,requestedEnd=input.tick_to??Math.min(playbackEnd,requestedStart+Math.floor(tickrate*30));
+  if(requestedEnd<requestedStart||requestedEnd-requestedStart>tickrate*30)throw new QueryError('frame_window_exceeds_30_seconds');
+  if(requestedEnd<round.start_tick||requestedStart>playbackEnd)throw new QueryError('frame_window_outside_round');
+  return {window:{round_number:round.round_number,tick_from:Math.max(round.start_tick,requestedStart),tick_to:Math.min(playbackEnd,requestedEnd)},round_boundary:{round_number:round.round_number,start_tick:round.start_tick,end_tick:round.end_tick,playback_end_tick:playbackEnd,next_round_start_tick:replay.next_round_start_tick??null}};
+}
 async function rawRecords(match,input){
   const dataset=input.raw_dataset,records=[],rounds=selectedRounds(match,input),replays=list(match.replay?.rounds),players=matchPlayers(match);
+  let frameContext=null;
   if(rawDenseDatasets.has(dataset)&&input.round_number==null)throw new QueryError('round_number_required');
   const add=(record,round,path,extra={})=>records.push({record,round_number:round.round_number,locator:{path,...extra},tick:record?.tick??record?.start_tick??record?.['0']??null});
   if(dataset==='owner_rounds'||dataset==='owner_events'){
@@ -255,12 +289,10 @@ async function rawRecords(match,input){
     }}
   }else{
     const actor=input.player_id?list(match.replay?.players).find(player=>playerId(player)===input.player_id):null;if(input.player_id&&!actor)throw new QueryError('player_not_found',404);
-    for(const round of rounds){const replay=replayRound(match,round);if(!replay)continue;const ri=replays.indexOf(replay),prefix=['replay','rounds',String(ri)];
+    for(const round of rounds){const replay=replayRound(match,round);if(!replay){if(dataset==='replay_frames')throw new QueryError('replay_unavailable',422);continue;}const ri=replays.indexOf(replay),prefix=['replay','rounds',String(ri)];
       if(dataset==='replay_frames'){
-        const end=replay.playback_end_tick??replay.end_tick??round.end_tick,tickrate=match.replay?.tickrate??64,start=input.tick_from??round.start_tick,finish=input.tick_to??Math.min(end,start+Math.floor(tickrate*30));
-        if(!Number.isSafeInteger(end)||end<round.end_tick||replay.next_round_start_tick!=null&&end>=replay.next_round_start_tick)throw new QueryError('frames_unavailable',422);
-        if(finish<start||finish-start>tickrate*30)throw new QueryError('frame_window_exceeds_30_seconds');
-        const frames=await decodeFrames(replay.frames,match.replay,{...round,end_tick:end});frames.forEach((frame,fi)=>{if(frame[0]<start||frame[0]>finish)return;frame[1].forEach((row,ai)=>{if(actor&&row[0]!==actor.index)return;add({tick:frame[0],...rawTuple(row,match.replay.player_fields)},round,[...prefix,'frames'],{decoded_path:[String(fi),'1',String(ai)],frame_tick_path:[String(fi),'0'],tuple_fields:match.replay.player_fields});});});
+        frameContext=rawFrameWindow(match,round,replay,input);
+        const frames=await decodeFrames(replay.frames,match.replay,{...round,end_tick:frameContext.round_boundary.playback_end_tick});frames.forEach((frame,fi)=>{if(frame[0]<frameContext.window.tick_from||frame[0]>frameContext.window.tick_to)return;frame[1].forEach((row,ai)=>{if(actor&&row[0]!==actor.index)return;add({tick:frame[0],...rawTuple(row,match.replay.player_fields)},round,[...prefix,'frames'],{decoded_path:[String(fi),'1',String(ai)],frame_tick_path:[String(fi),'0'],tuple_fields:match.replay.player_fields});});});
       }else{
         let values=[],tail=[];
         if(dataset==='replay_kills'){values=list(replay.kills);tail=['kills'];}
@@ -276,7 +308,7 @@ async function rawRecords(match,input){
       }
     }
   }
-  return records.filter(item=>(input.tick_from==null||Number.isFinite(item.tick)&&item.tick>=input.tick_from)&&(input.tick_to==null||Number.isFinite(item.tick)&&item.tick<=input.tick_to));
+  return {records:records.filter(item=>(input.tick_from==null||Number.isFinite(item.tick)&&item.tick>=input.tick_from)&&(input.tick_to==null||Number.isFinite(item.tick)&&item.tick<=input.tick_to)),frameContext};
 }
 function rawFieldSummary(records){
   const fields=new Map();for(const {record} of records.slice(0,128))for(const key of Object.keys(record??{})){if(!validRawField(key))continue;if(!fields.has(key))fields.set(key,{field:key,types:new Set(),present:0,null_count:0});const entry=fields.get(key),value=record[key];entry.present++;if(value===null)entry.null_count++;entry.types.add(value===null?'null':Array.isArray(value)?'array':typeof value);}
@@ -286,34 +318,38 @@ async function rawQuery(snapshot,input){
   const datasets=QUERY_INPUT_SCHEMA.properties.raw_dataset.enum;
   if(!input.match_id||!input.raw_dataset)return {datasets:datasets.map(name=>({raw_dataset:name,match_id_required:true,round_number_required:rawDenseDatasets.has(name),stored_values:true,unparsed_demo:false})),limits:{max_columns:32,max_filters:12,max_page_size:100,max_response_bytes:RAW_QUERY_RESPONSE_BYTES,max_batch_queries:6,max_frame_window_seconds:30},semantics:{columns:'Dot paths into exact saved parsed rows; default is scalar fields. Array tuple indices are numeric when source field names are unavailable.',missing:'Absent fields are listed in missing_fields; JSON null remains null.',filters:'AND scalar predicates; numeric ordering requires finite numeric operands.',provenance:'Each row includes the immutable detail shard, source revision and original or decoded array locator.',availability:'Only already parsed and stored observations are available. Empty rows are not proof that the source .dem had no event.'}};
   if(input.raw_dataset?.startsWith('aim_')&&input.raw_dataset!=='aim_target_points'&&input.player_id&&input.player_id!==snapshot.profile?.steamid64)throw new QueryError('mechanics_not_parsed_for_player',422);
-  const match=matchFor(snapshot,input),records=await rawRecords(match,input),fields=rawFieldSummary(records),filtered=records.filter(item=>(input.filters??[]).every(filter=>rawMatches(item.record,filter)));
-  if(input.resource==='raw_schema')return {...page(fields,input),raw_dataset:input.raw_dataset,records_in_window:records.length,field_sample_rows:Math.min(records.length,128),field_discovery_complete:records.length<=128,tuple_fields:records.find(item=>item.locator.tuple_fields)?.locator.tuple_fields??null};
+  const match=matchFor(snapshot,input),{records,frameContext}=await rawRecords(match,input),fields=rawFieldSummary(records),filtered=records.filter(item=>(input.filters??[]).every(filter=>rawMatches(item.record,filter)));
+  if(input.resource==='raw_schema')return {...page(fields,input),raw_dataset:input.raw_dataset,records_in_window:records.length,field_sample_rows:Math.min(records.length,128),field_discovery_complete:records.length<=128,tuple_fields:records.find(item=>item.locator.tuple_fields)?.locator.tuple_fields??null,...(frameContext?{...frameContext,pagination_scope:'fields_in_effective_frame_window'}:{})};
   const selected=page(filtered,input),columns=input.columns??fields.filter(field=>field.types.every(type=>!['object','array'].includes(type))).slice(0,32).map(field=>field.field);
   const items=selected.items.map(item=>{const record={},missing=[],omitted=[];for(const field of columns){const found=rawGet(item.record,field);if(found.present)record[field]=rawSafeCopy(found.value,[field],omitted);else missing.push(field);}const path=item.locator.path.join('.')+(item.locator.decoded_path?':decoded:'+item.locator.decoded_path.join('.'):'');return {record,round_number:item.round_number,locator:item.locator,evidence_ref:ref(match,{round_number:item.round_number},'raw:'+input.raw_dataset+':'+path),...(missing.length?{missing_fields:missing}:{}),...(omitted.length?{omitted_fields:omitted}:{})};});
-  const result={...selected,items,raw_dataset:input.raw_dataset,columns,scanned_rows:records.length,selected_rows:filtered.length,granularity:'stored_parsed_rows',unparsed_demo:false,provenance:{match_id:match.match_id,detail_content_sha256:match.detail_ref?.content_sha256??null,detail_source_revision:match.detail_ref?.source_revision??null,analysis_version:match.analysis_version??null},window:{round_number:input.round_number??null,tick_from:input.tick_from??null,tick_to:input.tick_to??null},response_byte_limit:RAW_QUERY_RESPONSE_BYTES};
-  while(new TextEncoder().encode(JSON.stringify(result)).byteLength>RAW_QUERY_RESPONSE_BYTES&&result.items.length){result.items.pop();result.pagination.returned=result.items.length;result.pagination.next_offset=result.pagination.offset+result.items.length<result.pagination.total?result.pagination.offset+result.items.length:null;result.response_limited=true;}
-  if(!result.items.length&&filtered.length>input.offset)throw new QueryError('raw_item_too_large',422,{hint:'Select narrower columns or use a deeper dot path; do not increase the response cap.'});
+  const result={...selected,items,raw_dataset:input.raw_dataset,columns,scanned_rows:records.length,selected_rows:filtered.length,granularity:'stored_parsed_rows',unparsed_demo:false,provenance:{match_id:match.match_id,detail_content_sha256:match.detail_ref?.content_sha256??null,detail_source_revision:match.detail_ref?.source_revision??null,analysis_version:match.analysis_version??null},window:{round_number:input.round_number??null,tick_from:input.tick_from??null,tick_to:input.tick_to??null},response_byte_limit:RAW_QUERY_RESPONSE_BYTES,...(frameContext?{...frameContext,pagination_scope:'filtered_actor_rows_in_effective_frame_window'}:{})};
   return result;
 }
 function catalog(snapshot,coach={}) {
   return {resources:QUERY_RESOURCES,scopes,match_ids:list(snapshot.matches).map(match=>match.match_id),limits:{default_page_size:25,max_page_size:100,max_response_bytes:MAX_QUERY_RESPONSE_BYTES,max_frame_window_seconds:30,max_path_depth:12},capabilities:{read_only:true,sql:false,code_execution:false,model_api:coach.status??'not_configured',all_player_statistics:list(snapshot.matches).some(match=>matchPlayers(match).length>0),frame_player_fields:[...new Set(list(snapshot.matches).flatMap(match=>list(match.replay?.player_fields)))],native_captures:{match_id_required:true,completed_current_owner_only:true},native_frames:{match_id_required:true,clip_id:'existing aim burst_id',source:'verified private uploaded native engine evidence',media_bytes:false}},inspect_roots:{snapshot:snapshotRoots,match:matchRoots,round:roundRoots},examples:[{resource:'matches',limit:10},{resource:'players',limit:25},{resource:'inspect',scope:'snapshot',path:['aggregate']},{resource:'analysis',match_id:'<match_id>',section:'level3',metric:'mechanics'},{resource:'replay_frames',match_id:'<match_id>',round_number:1,tick_from:0,tick_to:640,limit:50},{resource:'native_captures',match_id:'<match_id>',limit:10},{resource:'native_frames',match_id:'<match_id>',clip_id:'<burst_id>',limit:25}],evidence_format:'match:<id>:r<round>:<event or data path>'};
 }
 function bounded(result) {
+  const rawResource=['raw_schema','raw_rows'].includes(result.resource),maximum=rawResource?RAW_QUERY_RESPONSE_BYTES:MAX_QUERY_RESPONSE_BYTES;
+  if(rawResource)result.response_byte_limit=maximum;
+  // A second tick window becomes runnable only after all selected rows (or
+  // schema fields) in this window have been paged. Recompute after byte trims.
+  const refreshFrameCursor=()=>{if(result.raw_dataset==='replay_frames'&&result.round_boundary&&result.window&&result.pagination)result.next_tick_from=result.pagination.next_offset===null&&result.window.tick_to<result.round_boundary.playback_end_tick?result.window.tick_to+1:null;};
+  refreshFrameCursor();
   const size=()=>new TextEncoder().encode(JSON.stringify(result)).byteLength;
   let bytes=size();
-  if(bytes<=MAX_QUERY_RESPONSE_BYTES)return result;
-  if(!Array.isArray(result.items) || !result.pagination)throw new QueryError('query_result_too_large',422,{hint:'Use inspect with a deeper path or a smaller query window.'});
-  while(result.items.length && bytes>MAX_QUERY_RESPONSE_BYTES) {
+  if(bytes<=maximum)return result;
+  if(!Array.isArray(result.items) || !result.pagination)throw new QueryError(rawResource?'raw_result_too_large':'query_result_too_large',422,{hint:rawResource?'Select narrower columns or a smaller query window.':'Use inspect with a deeper path or a smaller query window.'});
+  while(result.items.length && bytes>maximum) {
     result.items.pop();result.pagination.returned=result.items.length;
     result.pagination.next_offset=result.pagination.offset+result.items.length<result.pagination.total?result.pagination.offset+result.items.length:null;
-    result.response_limited=true;bytes=size();
+    result.response_limited=true;refreshFrameCursor();bytes=size();
   }
-  if(!result.items.length && result.pagination.total>result.pagination.offset)throw new QueryError('query_item_too_large',422,{hint:'Use inspect with a deeper path.'});
-  if(bytes>MAX_QUERY_RESPONSE_BYTES)throw new QueryError('query_result_too_large',422,{hint:'Use inspect with a deeper path.'});
+  if(bytes>maximum)throw new QueryError(rawResource?'raw_result_too_large':'query_result_too_large',422,{hint:rawResource?'Source metadata exceeds the response cap.':'Use inspect with a deeper path.'});
+  if(!result.items.length && result.pagination.total>result.pagination.offset)throw new QueryError(rawResource?'raw_item_too_large':'query_item_too_large',422,{hint:rawResource?'Select narrower columns or use a deeper dot path; do not increase the response cap.':'Use inspect with a deeper path.'});
   return result;
 }
 export async function runQuery(snapshot,raw,delivery={},options={}) {
-  const input=validateInput(raw);
+  const input=normalizeQueryInput(raw);
   if(!snapshot || !Array.isArray(snapshot.matches))throw new QueryError('snapshot_unavailable',503);
   if(input.source_revision!=null&&input.source_revision!==source(snapshot,delivery).source_revision)throw new QueryError('source_revision_mismatch',409);
   if(input.resource==='raw_schema'&&!input.match_id)return bounded({query_version:QUERY_VERSION,resource:input.resource,source:source(snapshot,delivery),...await rawQuery(snapshot,input)});
@@ -451,7 +487,7 @@ export async function parseQueryRequest(request) {
       else if(key==='path'||key==='player_ids'||key==='columns')input[key]=value?value.split(','):[];
       else input[key]=value;
     }
-    return validateInput(input);
+    return normalizeQueryInput(input);
   }
   if(request.method!=='POST')throw new QueryError('method_not_allowed',405);
   if(origin!==url.origin)throw new QueryError('origin_rejected',403);
@@ -459,6 +495,6 @@ export async function parseQueryRequest(request) {
   if(Number(request.headers.get('content-length')??0)>MAX_QUERY_BYTES)throw new QueryError('query_too_large',413);
   const reader=request.body?.getReader();if(!reader)throw new QueryError('invalid_json');let text='',size=0;const decoder=new TextDecoder();
   while(true){const next=await reader.read();if(next.done)break;size+=next.value.byteLength;if(size>MAX_QUERY_BYTES){await reader.cancel();throw new QueryError('query_too_large',413);}text+=decoder.decode(next.value,{stream:true});}
-  try{return validateInput(JSON.parse(text+decoder.decode()));}catch(error){if(error instanceof QueryError)throw error;throw new QueryError('invalid_json');}
+  try{return normalizeQueryInput(JSON.parse(text+decoder.decode()));}catch(error){if(error instanceof QueryError)throw error;throw new QueryError('invalid_json');}
 }
 export function queryError(error) {return {error:error instanceof QueryError?error.code:'query_unavailable',...(error instanceof QueryError&&error.details?{details:error.details}:{})};}

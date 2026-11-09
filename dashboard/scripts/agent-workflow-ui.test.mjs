@@ -48,9 +48,34 @@ test('tool summary settles duplicate lifecycle records by attempt and marks part
     {kind:'tool',attempt:2,call_id:'two',status:'started'},
     {kind:'commentary',attempt:2,call_id:'invented',status:'completed'},
   ]});
-  assert.deepEqual(projected.recentTools,{active:1,complete:1,failed:1});assert.equal(projected.toolHistoryPartial,true);
+  assert.deepEqual(projected.recentTools,{active:0,complete:1,failed:1,interrupted:1});assert.equal(projected.toolHistoryPartial,true);
   const html=renderAgentWorkflow({activity_truncated:true,plan:[{id:'read',label:'读取',status:'active'}],activity:[{kind:'tool',attempt:1,call_id:'one',status:'completed'}]});
-  assert.match(html,/近期工具 · 运行中 0 · 已返回 1 · 未取得结果 0 · 较早记录已省略/);
+  assert.match(html,/近期工具 · 运行中 0 · 已返回 1 · 未取得结果 0 · 中断 0 · 较早记录已省略/);
+});
+
+test('server operations preserve interrupted calls across pause and resume without reviving stale starts',()=>{
+  const task={id:'same-turn',plan:[{id:'read',label:'读取',status:'active'}],activity:[{kind:'tool',attempt:1,call_id:'old',status:'started'}],workflow:{operations:{running:0,completed:2,failed:1,interrupted:1,retention:'complete'}}};
+  for(const status of ['awaiting_continuation','running']){
+    const view=projectAgentWorkflow({...task,status});
+    assert.deepEqual(view.recentTools,{active:0,complete:2,failed:1,interrupted:1});assert.equal(view.toolHistoryPartial,false);
+    assert.match(renderAgentWorkflow({...task,status}),/运行中 0 · 已返回 2 · 未取得结果 1 · 中断 1/);
+  }
+  const live=projectAgentWorkflow({...task,status:'running',workflow:{operations:{running:1,completed:2,failed:1,interrupted:1,retention:'recent'}}});
+  assert.deepEqual(live.recentTools,{active:1,complete:2,failed:1,interrupted:1});assert.equal(live.toolHistoryPartial,true);
+});
+
+test('legacy activity cannot claim live execution without a window epoch even when the task resumes',()=>{
+  const task={activity:[{kind:'tool',attempt:1,call_id:'interrupted-call',status:'started'}]};
+  for(const status of ['awaiting_continuation','running','completed','failed'])assert.deepEqual(projectAgentWorkflow({...task,status}).recentTools,{active:0,complete:0,failed:0,interrupted:1});
+});
+
+test('malformed or inconsistent server operations fall back to bounded settled activity',()=>{
+  const task={status:'awaiting_continuation',activity_truncated:true,activity:[{kind:'tool',attempt:1,call_id:'old',status:'started'},{kind:'tool',attempt:1,call_id:'done',status:'completed'}]},valid={running:0,completed:3,failed:0,interrupted:0,retention:'complete'};
+  const accessor={...valid};Object.defineProperty(accessor,'running',{get(){throw Error('must not evaluate accessors');},enumerable:true});
+  for(const operations of [null,{...valid,running:1},{...valid,completed:'3'},{...valid,failed:-1},{...valid,interrupted:1.5},{...valid,completed:161},{...valid,completed:100,failed:100},{...valid,retention:'all'},{...valid,extra:true},accessor]){
+    const view=projectAgentWorkflow({...task,workflow:{operations}});
+    assert.deepEqual(view.recentTools,{active:0,complete:1,failed:0,interrupted:1});assert.equal(view.toolHistoryPartial,true);
+  }
 });
 
 test('text-only rendering escapes model labels and handles empty/duplicate plans without invalid counters',()=>{
