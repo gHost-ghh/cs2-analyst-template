@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {bindAgentVisualizations,validateBoundAgentVisualization,evaluateAgentVisualScene} from '../shared/agent-visual.mjs';
 import {createAgentRuntime,createMemoryAgentStore} from '../worker/agent-runtime.mjs';
 import {createAgentStreamResponse,readSseEvents} from '../worker/agent-stream.mjs';
+import {prepareCoachStageArtifact} from '../ui/coach.js';
 
 const owner='76561198000000000',match='a'.repeat(24),source={source_revision:'b'.repeat(40),generated_at:'2026-11-10T00:00:00Z',content_sha256:'c'.repeat(64)};
 const query={resource:'rounds',match_id:match,offset:0,limit:20};
@@ -18,7 +19,7 @@ async function stream(value,binding){const response=createAgentStreamResponse({b
 test('projected stage source attestations come from the original server query and survive paused recovery',async()=>{
  const f=await fixture(),proof=f.artifact.visualizations[0].provenance[0],before=JSON.stringify(f.result);
  assert.deepEqual(proof.source,source);assert.deepEqual(proof.path,['items']);assert.deepEqual(Object.keys(proof.source).sort(),['content_sha256','generated_at','source_revision']);assert.equal(Object.hasOwn(f.modelCandidate.document.dataBindings[0],'source'),false);assert.equal(Object.hasOwn(f.artifact.visualizations[0].data.rows,'source'),false);
- const sent=await stream(f.artifact,f.binding);assert.equal(sent[0].type,'artifact');assert.equal(sent[0].payload.visualizations[0].data.rows[0].damage,80);
+ const sent=await stream(f.artifact,f.binding);assert.equal(sent[0].type,'artifact');assert.equal(sent[0].payload.visualizations[0].data.rows[0].damage,80);assert.ok(prepareCoachStageArtifact(f.artifact,source,f.session.turn.id));
  await f.session.pause();const recovered=await f.runtime.read(f.session.record.id,source);assert.deepEqual(recovered.task.stage_artifact,f.artifact);assert.equal((await stream(recovered.task.stage_artifact,f.binding))[0].type,'artifact');assert.equal(JSON.stringify(f.result),before);
 });
 
@@ -30,7 +31,7 @@ test('projected stage streams reject absent, malformed, unknown or mismatched so
  const partial=structuredClone(f.artifact);delete partial.visualizations[0].provenance[0].source.generated_at;variants.push(partial);
  const foreign=structuredClone(f.artifact);foreign.visualizations[0].provenance[0].query_ref=`turn:${crypto.randomUUID()}:g0:query:1`;variants.push(foreign);
  let reads=0;const accessor=structuredClone(f.artifact);Object.defineProperty(accessor.visualizations[0].provenance[0].source,'source_revision',{enumerable:true,get(){reads++;return source.source_revision;}});variants.push(accessor);
- for(const value of variants){const sent=await stream(value,f.binding);assert.deepEqual(sent.map(event=>event.type),['error']);assert.equal(sent[0].payload.error,'agent_stream_event_invalid');assert.doesNotMatch(JSON.stringify(sent),/PRIVATE_SOURCE/);}
+ for(const value of variants){const sent=await stream(value,f.binding);assert.deepEqual(sent.map(event=>event.type),['error']);assert.equal(sent[0].payload.error,'agent_stream_event_invalid');assert.doesNotMatch(JSON.stringify(sent),/PRIVATE_SOURCE/);assert.equal(prepareCoachStageArtifact(value,source,f.session.turn.id),null);}
  assert.equal(reads,0);
 });
 
@@ -43,6 +44,6 @@ test('a stage attestation cannot be substituted for the sealed original query so
 
 test('old formal projected visuals stay renderable without rewriting their provenance, and legacy full-data stage sources still work',async()=>{
  const f=await fixture(),legacy=structuredClone(f.artifact.visualizations[0]);delete legacy.provenance[0].source;const serialized=JSON.stringify(legacy);assert.equal(validateBoundAgentVisualization(legacy),true);assert.equal(evaluateAgentVisualScene(legacy).nodes[0].text,'80');assert.equal(JSON.stringify(legacy),serialized);
- const complete=await fixture({projected:false,legacySource:true});delete complete.artifact.visualizations[0].provenance[0].source;const sent=await stream(complete.artifact,complete.binding);assert.equal(sent[0].type,'artifact');assert.equal(Object.hasOwn(sent[0].payload.visualizations[0].data.rows.source,'content_sha256'),false,'Unknown historical hashes remain unknown');
+ const complete=await fixture({projected:false,legacySource:true});delete complete.artifact.visualizations[0].provenance[0].source;const sent=await stream(complete.artifact,complete.binding);assert.equal(sent[0].type,'artifact');assert.ok(prepareCoachStageArtifact(complete.artifact,source,complete.session.turn.id));assert.equal(Object.hasOwn(sent[0].payload.visualizations[0].data.rows.source,'content_sha256'),false,'Unknown historical hashes remain unknown');
  const stale=structuredClone(complete.artifact);stale.visualizations[0].data.rows.source.source_revision='d'.repeat(40);assert.equal((await stream(stale,complete.binding))[0].type,'error');
 });

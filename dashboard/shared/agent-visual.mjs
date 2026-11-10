@@ -93,7 +93,7 @@ export const AGENT_VISUAL_GUIDANCE=`交互文档语法：只输出 Schema 中的
 表达式只读作用域：params.<参数名>、vars.<let 名>、data.<dataBinding 名> 是服务器本次实际查询的完整响应（通常有 items/source）。参数、let 和数据名用英文字母开头的字母数字下划线，节点 id 还可用连字符。lets 依次求值；repeat:{expr:'data.samples.items',as:'item',index:'index'} 为该节点和子树建立逐行作用域；when 是布尔表达式。支持数值/字符串/布尔/null、数组、字段/索引、+ - * / %、比较、&& || ??、条件 ? :。辅助函数 min/max(数值参数或数组及可选字段名)、abs/round(value,decimals)/floor/ceil/sqrt/pow/sin/cos/tan/atan2/log/exp/clamp/lerp/len、sum/avg(array,可选字段名)、column(array,字段名)、where(array,字段名,相等值)、take(array,数量)、slice(array,起点,终点)、sortBy(array,字段名,'asc'或'desc')、linePath(array,x字段名,y字段名,x比例,y比例,x偏移,y偏移)。不能使用对象方法、Math、箭头函数、map/filter、toFixed 或赋值。小数显示用 round(value,decimals)，筛选用 where(array,字段名,相等值)。单条表达式最多 512 字符、16 层；重复计算或长条件应拆成按顺序求值的 lets，再引用 vars.<名称>，不要反复复制整个公式。修复反馈的 expected 会给出具体语法原因，并在可以定位时给出从 0 开始的字符位置；该位置指向未通过校验的原表达式。
 同一 visualizations.evidence_refs 中每条引用只列一次；多个绑定或动作可以复用它，不能为去重删除图解或绑定。
 params 的 type 为 range/select/toggle。range 用数值 value/min/max/step，options:[]；select 用字符串或数值 value，min/max/step:null，options:[{label,value}]；toggle 用布尔 value，其余数值:null，options:[]。控件变化会重新计算 lets 和所有绑定，无需额外代码。
-服务器会先按默认参数求值全部 lets、repeat、when 和 bindings。text 绑定必须得到标量，repeat 必须得到数组，数值属性必须得到实际数值；缺失字段返回 null，应按真实缺口处理，不能用 0 冒充观测。默认值也须避开除零、无效函数参数及越过渲染预算的重复展开。
+服务器会先按默认参数求值全部 lets、repeat、when 和 bindings。text 绑定必须得到标量，repeat 必须得到数组，数值属性必须得到实际数值；缺失字段返回 null，应按真实缺口处理，不能用 0 冒充观测。原始 raw_rows 与计算统计的 items 形状不同：raw_rows 的真实列值在 items[i].record 内；绑定 path:['items']、name:'rows' 后，伤害应读 data.rows[0].record.damage，repeat 行应读 item.record.damage。统计计算行才直接读 data.rows[0].damage。不要将 raw_rows 的 locator、evidence_ref 等外层元数据误当作 record；raw_record_field_path 反馈要求按已读行的真实层级修复，不能写常数或自动拍平数据。默认值也须避开除零、无效函数参数及越过渲染预算的重复展开。
 配色应适应宿主深色和浅色主题。普通 HTML 文字继承 color；SVG text/tspan 的普通标签用 fill:'currentColor'，未声明也未继承显式 fill 时运行时也以 currentColor 跟随文字前景。不要把普通文字固定为黑色或白色；fill/stroke 不支持 CSS var()。系列与状态保留明确语义色；自设面板背景时同时设置对比清晰的文字色，检查数值、轴标签和图例在实际背景及图形上均可读。
 自定义图解最小例：document={version:1,kind:'illustration',assumptions:['滑块调整的是解释用假设角度，非实测瞄准。'],dataBindings:[],params:[{name:'angle',type:'range',label:'假设角度（度）',value:20,min:0,max:90,step:1,options:[]}],lets:[{name:'x',expr:'100 + 75 * cos(params.angle * 0.017453293)'},{name:'y',expr:'90 - 75 * sin(params.angle * 0.017453293)'}],nodes:[{id:'diagram',parent:null,tag:'svg',attrs:[{name:'viewBox',value:'0 0 220 110'}],style:[],text:null,bindings:[],when:null,repeat:null,action:null},{id:'ray',parent:'diagram',tag:'line',attrs:[{name:'x1',value:100},{name:'y1',value:90},{name:'stroke',value:'currentColor'}],style:[],text:null,bindings:[{target:'attr:x2',expr:'vars.x'},{target:'attr:y2',expr:'vars.y'}],when:null,repeat:null,action:null},{id:'label',parent:'diagram',tag:'text',attrs:[{name:'x',value:5},{name:'y',value:18}],style:[],text:null,bindings:[{target:'text',expr:"'假设角度 ' + params.angle + '°'"}],when:null,repeat:null,action:null}],actions:[]}。可将该自由图解改造成问题所需的多个图层、曲线、可调解释或实测数据视图。observed 文档必须通过 dataBindings:[{name:'samples',evidence_ref:'本次真实引用'}] 使用真实查询结果，不能把编造值写成实测；说明性几何必须标为 illustration 并声明假设。统计图优先显式绑定 {name:'samples',evidence_ref:'精确计算引用',path:['items']}，此时 data.samples 本身是行数组，使用 data.samples[0].字段或 repeat.expr='data.samples'，不能继续访问 data.samples.items。省略 path 或填 null 维持完整结果；其他所需元数据应另起具名绑定和精确路径。全部绑定合计仍须不超过 65536 字节。actions 只定义引用证据的站内动作，按钮 node.action 指定其 id，只有用户点击才会执行。
 预算：默认 1 个，最多 2 个文档；每个 32 KiB、8 个参数、160 个节点；每个 select 最多 ${AGENT_VISUAL_LIMITS.selectOptions} 个选项；数据 64 KiB，表达式 512 字符/16 层，实际渲染最多 2000 节点。优先 3–12 节点和 1–3 参数；只为有解释价值的问题生成控件。`;
@@ -216,55 +216,63 @@ export function compileAgentVisualExpression(expression){
   let count=0;function check(node,depth=0){if(depth>AGENT_VISUAL_LIMITS.expressionDepth)reject('depth');if(++count>256)reject('complexity');for(const child of Object.values(node)){if(child&&typeof child==='object'){if(Array.isArray(child))for(const part of child)check(part,depth+1);else check(child,depth+1);}}}check(tree);
   if(compiled.size>=300)compiled.delete(compiled.keys().next().value);compiled.set(expression,tree);return tree;
 }
-function field(value,key){
+function field(value,key,onMissingRecordField=null){
   if((typeof key!=='string'&&typeof key!=='number')||PROTOTYPE_KEYS.has(String(key)))fail();
   if(Array.isArray(value)){if(key==='length')return value.length;const index=Number(key);if(!Number.isInteger(index)||index<0||index>=value.length)return null;key=String(index);}
   if(typeof value==='string'&&key==='length')return value.length;
-  if(!own(value,key))return null;const descriptor=Object.getOwnPropertyDescriptor(value,key);if(!Object.hasOwn(descriptor,'value'))fail();return descriptor.value;
+  if(!own(value,key)){
+    // Raw query items wrap projected values in record. Keep ordinary missing
+    // reads nullable, while an observed-scene preflight can diagnose this exact
+    // envelope/record confusion without flattening or changing the source data.
+    if(onMissingRecordField&&value&&typeof value==='object'){
+      const record=ownDataDescriptor(value,'record')?.value;
+      if(record&&typeof record==='object'&&ownDataDescriptor(record,key))onMissingRecordField();
+    }
+    return null;
+  }const descriptor=Object.getOwnPropertyDescriptor(value,key);if(!Object.hasOwn(descriptor,'value'))fail();return descriptor.value;
 }
 function array(value){if(!Array.isArray(value)||value.length>AGENT_VISUAL_LIMITS.array)fail();return value;}
 function num(value){if(!finite(value))fail();return value;}
-function values(value,key=null){return array(value).map(item=>num(key===null?item:field(item,key)));}
+function values(value,key=null,state=null){return array(value).map(item=>num(key===null?item:field(item,key,state?.onMissingRecordField)));}
 function charge(state,amount=1){state.steps+=amount;if(state.steps>state.limit)throw new Error('Agent visual expression budget exceeded');}
-function extremum(state,args,fn){const v=Array.isArray(args[0])?values(args[0],args[1]??null):args.map(num);if(Array.isArray(args[0])&&args.length>2)fail();charge(state,v.length);return v.length?fn(...v):null;}
+function extremum(state,args,fn){const v=Array.isArray(args[0])?values(args[0],args[1]??null,state):args.map(num);if(Array.isArray(args[0])&&args.length>2)fail();charge(state,v.length);return v.length?fn(...v):null;}
 const HELPERS={
   min:(s,...args)=>extremum(s,args,Math.min),max:(s,...args)=>extremum(s,args,Math.max),abs:(s,a)=>Math.abs(num(a)),round:(s,a,d=0)=>{num(d);if(!Number.isInteger(d)||d<0||d>6)fail();const p=10**d;return Math.round(num(a)*p)/p;},floor:(s,a)=>Math.floor(num(a)),ceil:(s,a)=>Math.ceil(num(a)),sqrt:(s,a)=>Math.sqrt(num(a)),pow:(s,a,b)=>Math.pow(num(a),num(b)),sin:(s,a)=>Math.sin(num(a)),cos:(s,a)=>Math.cos(num(a)),tan:(s,a)=>Math.tan(num(a)),atan2:(s,a,b)=>Math.atan2(num(a),num(b)),log:(s,a)=>Math.log(num(a)),exp:(s,a)=>Math.exp(num(a)),clamp:(s,a,lo,hi)=>Math.min(num(hi),Math.max(num(lo),num(a))),lerp:(s,a,b,t)=>num(a)+(num(b)-num(a))*num(t),
   len:(s,a)=>typeof a==='string'?a.length:array(a).length,
-  sum:(s,a,key=null)=>{const v=values(a,key);charge(s,v.length);return v.reduce((sum,value)=>sum+value,0);},avg:(s,a,key=null)=>{const v=values(a,key);charge(s,v.length);return v.length?v.reduce((sum,value)=>sum+value,0)/v.length:null;},
-  column:(s,a,key)=>{const v=array(a);charge(s,v.length);return v.map(item=>field(item,key));},
-  where:(s,a,key,value)=>{const v=array(a);charge(s,v.length);return v.filter(item=>field(item,key)===value);},
+  sum:(s,a,key=null)=>{const v=values(a,key,s);charge(s,v.length);return v.reduce((sum,value)=>sum+value,0);},avg:(s,a,key=null)=>{const v=values(a,key,s);charge(s,v.length);return v.length?v.reduce((sum,value)=>sum+value,0)/v.length:null;},
+  column:(s,a,key)=>{const v=array(a);charge(s,v.length);return v.map(item=>field(item,key,s.onMissingRecordField));},
+  where:(s,a,key,value)=>{const v=array(a);charge(s,v.length);return v.filter(item=>field(item,key,s.onMissingRecordField)===value);},
   take:(s,a,count)=>{const v=array(a);return v.slice(0,Math.max(0,Math.min(v.length,Math.floor(num(count)))));},slice:(s,a,start,end)=>array(a).slice(Math.floor(num(start)),end===undefined?undefined:Math.floor(num(end))),
-  sortBy:(s,a,key,direction='asc')=>{const v=array(a);charge(s,v.length*Math.ceil(Math.log2(v.length+1)));return [...v].sort((left,right)=>{const a=field(left,key),b=field(right,key);if(!cleanScalar(a)||!cleanScalar(b))fail();return (a>b?1:a<b?-1:0)*(direction==='desc'?-1:1);});},
-  linePath:(s,a,xKey='x',yKey='y',sx=1,sy=1,ox=0,oy=0)=>{const v=array(a);charge(s,v.length*2);[sx,sy,ox,oy].forEach(num);return v.map((point,i)=>`${i?'L':'M'}${num(field(point,xKey))*sx+ox},${num(field(point,yKey))*sy+oy}`).join(' ');}
+  sortBy:(s,a,key,direction='asc')=>{const v=array(a);charge(s,v.length*Math.ceil(Math.log2(v.length+1)));return [...v].sort((left,right)=>{const a=field(left,key,s.onMissingRecordField),b=field(right,key,s.onMissingRecordField);if(!cleanScalar(a)||!cleanScalar(b))fail();return (a>b?1:a<b?-1:0)*(direction==='desc'?-1:1);});},
+  linePath:(s,a,xKey='x',yKey='y',sx=1,sy=1,ox=0,oy=0)=>{const v=array(a);charge(s,v.length*2);[sx,sy,ox,oy].forEach(num);return v.map((point,i)=>`${i?'L':'M'}${num(field(point,xKey,s.onMissingRecordField))*sx+ox},${num(field(point,yKey,s.onMissingRecordField))*sy+oy}`).join(' ');}
 };
 export function evaluateAgentVisualExpression(expression,scope={},options={}){
-  const ast=compileAgentVisualExpression(expression),state=options.budget||{steps:0,limit:Math.min(options.maxSteps||AGENT_VISUAL_LIMITS.expressionSteps,AGENT_VISUAL_LIMITS.expressionSteps)};
+  const ast=compileAgentVisualExpression(expression),state=options.budget||{steps:0,limit:Math.min(options.maxSteps||AGENT_VISUAL_LIMITS.expressionSteps,AGENT_VISUAL_LIMITS.expressionSteps)},diagnostics=options.recordFieldDiagnostics,taints=diagnostics?new Map():null;
   function evaluate(node,depth=0){
-    charge(state);if(depth>AGENT_VISUAL_LIMITS.expressionDepth)fail();let result;
+    charge(state);if(depth>AGENT_VISUAL_LIMITS.expressionDepth)fail();let result;const issues=[];
+    const read=(child,consume=true)=>{const value=evaluate(child,depth+1);if(consume&&taints)issues.push(...(taints.get(child)??[]));return value;};
+    const missing=diagnostics?()=>issues.push(diagnostics.path):null;
     if(node.type==='literal')result=node.value;
     else if(node.type==='name'){if(FORBIDDEN.has(node.name)||!own(scope,node.name))fail();result=scope[node.name];}
-    else if(node.type==='array')result=node.values.map(value=>evaluate(value,depth+1));
-    else if(node.type==='member')result=field(evaluate(node.value,depth+1),evaluate(node.key,depth+1));
-    else if(node.type==='call')result=HELPERS[node.name](state,...node.args.map(value=>evaluate(value,depth+1)));
-    else if(node.type==='unary'){const value=evaluate(node.value,depth+1);result=node.op==='!'?!value:node.op==='-'?-num(value):num(value);}
-    else if(node.type==='ternary')result=evaluate(evaluate(node.condition,depth+1)?node.yes:node.no,depth+1);
+    else if(node.type==='array')result=node.values.map(value=>read(value));
+    else if(node.type==='member'){const value=read(node.value),key=read(node.key);result=field(value,key,missing);if(diagnostics&&value===scope.vars)issues.push(...(diagnostics.variables.get(key)??[]));}
+    else if(node.type==='call'){const args=node.args.map(value=>read(value)),prior=state.onMissingRecordField;state.onMissingRecordField=missing;try{result=HELPERS[node.name](state,...args);}finally{state.onMissingRecordField=prior;}}
+    else if(node.type==='unary'){const value=read(node.value,node.op!=='!');result=node.op==='!'?!value:node.op==='-'?-num(value):num(value);}
+    else if(node.type==='ternary')result=read(read(node.condition,false)?node.yes:node.no);
     else if(node.type==='binary'){
-      const left=evaluate(node.left,depth+1);
-      if(node.op==='&&')return left?evaluate(node.right,depth+1):left;
-      if(node.op==='||')return left?left:evaluate(node.right,depth+1);
-      if(node.op==='??')return left===null?evaluate(node.right,depth+1):left;
-      const right=evaluate(node.right,depth+1);
-      switch(node.op){
+      const short=['&&','||','??'].includes(node.op),nullCheck=['==','===','!=','!=='].includes(node.op)&&(node.left.type==='literal'&&node.left.value===null||node.right.type==='literal'&&node.right.value===null),left=read(node.left,!short&&!nullCheck);
+      if(short){const useRight=node.op==='&&'?!!left:node.op==='||'?!left:left===null;result=useRight?read(node.right):left;if(!useRight&&left!==null&&taints)issues.push(...(taints.get(node.left)??[]));}
+      else{const right=read(node.right,!nullCheck);switch(node.op){
         case '+':if(typeof left==='string'||typeof right==='string'){if(!cleanScalar(left)||!cleanScalar(right))fail();result=String(left)+String(right);}else result=num(left)+num(right);break;
         case '-':result=num(left)-num(right);break;case '*':result=num(left)*num(right);break;case '/':result=num(left)/num(right);break;case '%':result=num(left)%num(right);break;
         case '==':case '===':result=left===right;break;case '!=':case '!==':result=left!==right;break;
         case '<':case '>':case '<=':case '>=':if(!cleanScalar(left)||!cleanScalar(right))fail();result=node.op==='<'?left<right:node.op==='>'?left>right:node.op==='<='?left<=right:left>=right;break;
         default:fail();
-      }
+      }}
     }else fail();
-    if(typeof result==='number'&&!finite(result))fail();if(typeof result==='string'&&result.length>16000)fail();return result;
+    if(typeof result==='number'&&!finite(result))fail();if(typeof result==='string'&&result.length>16000)fail();if(taints)taints.set(node,[...new Set(issues)]);return result;
   }
-  return evaluate(ast);
+  const result=evaluate(ast);if(diagnostics)diagnostics.issues=taints.get(ast)??[];return result;
 }
 
 export function isSafeAgentVisualAttribute(name,value){
@@ -386,22 +394,27 @@ function wrapperValid(visual,bound=false){
   return keys(visual,names)&&string(visual.title,160,false)&&string(visual.description,800)&&refsValid(visual.evidence_refs)&&validateAgentVisualDocument(visual.document)&&bytes({title:visual.title,description:visual.description,evidence_refs:visual.evidence_refs,document:visual.document})<=AGENT_VISUAL_LIMITS.specBytes;
 }
 /** Evaluate the exact bounded scene before any DOM is created on either host. */
-export function evaluateAgentVisualScene(visual,parameterValues=null){
+export function evaluateAgentVisualScene(visual,parameterValues=null,{inspectRawRecords=false}={}){
   if(!validateBoundAgentVisualization(visual))fail();
   const doc=visual.document,params=parameterValues??Object.fromEntries(doc.params.map(param=>[param.name,param.value]));
   if(!keys(params,doc.params.map(param=>param.name)))fail();
   for(const param of doc.params){const value=params[param.name];
     if(param.type==='range'&&(!finite(value)||value<param.min||value>param.max)||param.type==='toggle'&&typeof value!=='boolean'||param.type==='select'&&!param.options.some(option=>option.value===value))fail();
   }
-  const vars=Object.create(null),base={data:visual.data,params,vars},children=new Map();
-  for(const node of doc.nodes){if(!children.has(node.parent))children.set(node.parent,[]);children.get(node.parent).push(node);}
-  const budget={steps:0,limit:AGENT_VISUAL_LIMITS.expressionSteps};let rendered=0,visits=0;
-  const evaluate=(expression,scope)=>evaluateAgentVisualExpression(expression,scope,{budget});
-  for(const item of doc.lets)vars[item.name]=evaluate(item.expr,base);
+  const vars=Object.create(null),base={data:visual.data,params,vars},children=new Map(),nodePaths=new Map();
+  for(const [index,node]of doc.nodes.entries()){if(!children.has(node.parent))children.set(node.parent,[]);children.get(node.parent).push(node);nodePaths.set(node,`document.nodes.${index}`);}
+  const budget={steps:0,limit:AGENT_VISUAL_LIMITS.expressionSteps},variables=new Map(),inspect=inspectRawRecords&&doc.kind==='observed';let rendered=0,visits=0;
+  const evaluate=(expression,scope,path,{variable=null,guard=false}={})=>{
+    const diagnostic=inspect?{path,variables,issues:[]}:null,value=evaluateAgentVisualExpression(expression,scope,{budget,...(diagnostic?{recordFieldDiagnostics:diagnostic}:{})});
+    if(diagnostic){if(variable!==null)variables.set(variable,diagnostic.issues);else if(!guard&&diagnostic.issues.length){const error=new Error('Raw record field requires its wrapper path');error.visual_scene_issues=diagnostic.issues.slice(0,8).map(path=>({code:'raw_record_field_path',path,expected:'Raw query items wrap projected fields in record. Read data.alias[index].record.FIELD (or item.record.FIELD in a repeat); keep the exact data binding and evidence reference. Explicit null and guarded missing values remain nullable.'}));throw error;}}
+    return value;
+  };
+  for(const [index,item]of doc.lets.entries())vars[item.name]=evaluate(item.expr,base,`document.lets.${index}.expr`,{variable:item.name});
   const draw=(node,scope,inSvg=false)=>{
     if(++visits>AGENT_VISUAL_LIMITS.renderedNodes)throw new Error('Agent visual render budget exceeded');
     const drawOnce=local=>{
-      if(node.when!==null&&!evaluate(node.when,local))return null;
+      const nodePath=nodePaths.get(node);
+      if(node.when!==null&&!evaluate(node.when,local,`${nodePath}.when`,{guard:true}))return null;
       if(++rendered>AGENT_VISUAL_LIMITS.renderedNodes)throw new Error('Agent visual render budget exceeded');
       const svg=inSvg||node.tag==='svg';
       if(svg!==SVG_TAGS.has(node.tag))throw new Error('Invalid visual namespace');
@@ -418,12 +431,12 @@ export function evaluateAgentVisualScene(visual,parameterValues=null){
       for(const item of node.attrs)set('attr:'+item.name,item.value);
       for(const item of node.style)set('style:'+item.name,item.value);
       if(node.text!==null)set('text',node.text);
-      for(const binding of node.bindings)set(binding.target,evaluate(binding.expr,local));
+      for(const [index,binding]of node.bindings.entries())set(binding.target,evaluate(binding.expr,local,`${nodePath}.bindings.${index}.expr`));
       const nested=[];for(const child of children.get(node.id)||[])nested.push(...draw(child,local,svg));
       return {id:node.id,tag:node.tag,svg,attrs,style,text,action:node.action,children:nested};
     };
     if(node.repeat===null){const result=drawOnce(scope);return result?[result]:[];}
-    const rows=evaluate(node.repeat.expr,scope);if(!Array.isArray(rows)||rows.length>AGENT_VISUAL_LIMITS.array)throw new Error('Invalid visual repeat');
+    const rows=evaluate(node.repeat.expr,scope,`${nodePaths.get(node)}.repeat.expr`);if(!Array.isArray(rows)||rows.length>AGENT_VISUAL_LIMITS.array)throw new Error('Invalid visual repeat');
     const result=[];
     for(let index=0;index<rows.length;index++){
       if(++visits>AGENT_VISUAL_LIMITS.renderedNodes)throw new Error('Agent visual render budget exceeded');
@@ -466,7 +479,7 @@ export function bindAgentVisualizations(candidates,{evidence,queryResults,source
     // The same pure evaluation used by the browser must succeed at the supplied
     // defaults. This keeps schema-valid but unrenderable model output inside the
     // caller's existing visual-repair budget instead of a completed report.
-    try{evaluateAgentVisualScene(visual);}catch{visualFailure('initial_scene',index,'document.nodes');}return visual;
+    try{evaluateAgentVisualScene(visual,null,{inspectRawRecords:true});}catch(error){visualFailure('initial_scene',index,'document.nodes',error.visual_scene_issues?.map(issue=>({...issue,path:`visualizations.${index}.${issue.path}`})));}return visual;
   });
 }
 export function validateBoundAgentVisualization(visual){
@@ -475,5 +488,22 @@ export function validateBoundAgentVisualization(visual){
     cloneData(visual.data);
     const cited=new Set(visual.evidence_refs);
     return visual.document.dataBindings.every((binding,index)=>{const proof=cloneData(ownDataDescriptor(visual.provenance,String(index))?.value),withSource=own(proof,'source');return cited.has(binding.evidence_ref)&&own(visual.data,binding.name)&&keys(proof,['name','evidence_ref','query_ref',...(Object.hasOwn(binding,'path')?['path']:[]),...(withSource?['source']:[])])&&(!withSource||keys(proof.source,['source_revision','generated_at','content_sha256'])&&bindingSource(proof.source)!==null)&&proof.name===binding.name&&proof.evidence_ref===binding.evidence_ref&&agentQueryReference.test(proof.query_ref)&&JSON.stringify(proof.path)===JSON.stringify(binding.path);})&&visual.document.actions.every(action=>cited.has(action.evidence_ref));
+  }catch{return false;}
+}
+/** The same stage-source boundary runs before Worker delivery and UI display. */
+export function validateAgentVisualSource(visual,source){
+  try{
+    if(!validateBoundAgentVisualization(visual))return false;const expected=bindingSource(source);if(!expected)return false;
+    const fields=['source_revision','generated_at','content_sha256'],same=(a,b)=>fields.every(key=>a[key]===b[key]);
+    for(const proof of visual.provenance){
+      const selected=ownDataDescriptor(visual.data,proof.name)?.value,original=selected&&typeof selected==='object'?ownDataDescriptor(selected,'source')?.value:null,observed=original?bindingSource(original):null,attested=own(proof,'source')?bindingSource(proof.source):null;
+      if(attested&&observed&&!same(attested,observed))return false;
+      if(attested&&same(attested,expected))continue;
+      // Historical complete bindings carry their source in data. Preserve
+      // unknown historical hashes; projected subtrees need an exact current
+      // source attestation generated by the server's original-query binder.
+      if(proof.path!=null||!observed||fields.some(key=>expected[key]!=null&&(key!=='content_sha256'||observed[key]!=null)&&observed[key]!==expected[key]))return false;
+    }
+    return true;
   }catch{return false;}
 }

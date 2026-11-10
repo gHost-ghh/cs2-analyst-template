@@ -1,7 +1,7 @@
 import {mountAgentVisual} from './agent-visual.js';
 import {renderAgentWorkflow} from './agent-workflow.js';
 import {prepareProviderTrace,reduceProviderTrace,renderProviderTrace} from './agent-reasoning.js';
-import {validateBoundAgentVisualization} from '../shared/agent-visual.mjs';
+import {validateBoundAgentVisualization,validateAgentVisualSource} from '../shared/agent-visual.mjs';
 
 const coachEscape=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const coachResourceNames={catalog:'数据目录',status:'样本范围',overview:'总体表现',matches:'对局档案',match:'对局详情',players:'玩家名单',player:'玩家档案',compare:'共同对局对比',rounds:'回合数据',round:'回合详情',round_results:'回合结果',events:'交战事件',analysis:'技术指标',aim:'定位片段',replay_frames:'回放帧',grenades:'投掷轨迹',effects:'道具效果',shots:'射击记录',bullet_impacts:'弹着点',damage_events:'伤害记录',bomb:'C4 状态',definitions:'指标定义',sync:'同步状态',inspect:'数据明细',raw_schema:'原始字段目录',raw_rows:'原始数据行'};
@@ -239,11 +239,11 @@ export function mergeCoachActivity(previous,incoming,turnId){
 }
 export function prepareCoachStageArtifact(value,expectedSource,turnId=null){
   if(!coachRecord(value)||Object.keys(value).some(key=>!['source','visualizations','evidence'].includes(key))||!coachRecord(value.source)||JSON.stringify(coachStreamSource(value.source))!==JSON.stringify(coachStreamSource(expectedSource)))return null;
-  const visuals=coachArray(value.visualizations);if(!visuals.length||visuals.length>2||!visuals.every(validateBoundAgentVisualization))return null;
+  const visuals=coachArray(value.visualizations);if(!visuals.length||visuals.length>2||!visuals.every(visual=>validateAgentVisualSource(visual,expectedSource)))return null;
   const result=coachHistoryResult({status:'complete',analysis:{headline:'阶段结果'},agent:{visualizations:visuals},evidence:value.evidence},{live:true});
   if(!result||result.agent?.visualizations?.length!==visuals.length)return null;
   if(turnId&&visuals.some(visual=>visual.provenance.some(proof=>!proof.query_ref.startsWith('turn:'+turnId+':g'))))return null;
-  const source=coachStreamSource(value.source);for(const visual of visuals)for(const data of Object.values(visual.data))if(!data?.source||['source_revision','generated_at'].some(key=>source[key]!=null&&data.source[key]!==source[key]))return null;
+  const source=coachStreamSource(value.source);
   return {source,visualizations:result.agent.visualizations,evidence:result.evidence};
 }
 const coachToolNames={manage_task_plan:'调整任务计划',report_progress:'分析说明',present_coach_analysis:'提交分析结果',validate_visualization:'核验交互图解',list_statistics_fields:'统计字段目录',analyze_statistics:'本地统计计算',analyze_statistics_batch:'批量统计计算',read_statistics_bulk:'批量加载统计',read_query_archive:'读取已存证据',list_query_archive:'已存证据目录',read_data_coverage:'核对数据覆盖',read_data_batch:'批量读取明细'};

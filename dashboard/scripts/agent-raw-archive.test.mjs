@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createCoachHandler} from '../worker/coach.mjs';
 import {AgentRuntimeError,createAgentRuntime,createMemoryAgentStore} from '../worker/agent-runtime.mjs';
 import {readSseEvents} from '../worker/agent-stream.mjs';
+import {createCoachSession} from '../ui/coach.js';
 
 const owner='76561198000000000',match='a'.repeat(24),source={source_revision:'b'.repeat(40),content_sha256:'c'.repeat(64),generated_at:'2026-11-09T00:00:00Z'};
 const selection={match_id:match,raw_dataset:'owner_rounds',columns:['round_number','damage','deaths'],filters:[{field:'damage',op:'eq',value:0},{field:'deaths',op:'gt',value:0}],source_revision:source.source_revision};
@@ -30,6 +31,27 @@ test('real streaming handler archives filtered raw rows and restores exact evide
  const before=await store.load(`coach/v3/${owner}/sessions/${conversation.id}.json`),url=new URL('https://example.test/api/coach');url.searchParams.set('conversation_id',conversation.id);url.searchParams.set('turn_id',conversation.turn_id);url.searchParams.set('query_ref',reference);
  const savedResponse=await handler(new Request(url));assert.equal(savedResponse.status,200);const saved=await savedResponse.json();assert.equal(saved.read_only,true);assert.equal(saved.stale,false);assert.equal(saved.query_ref,reference);assert.deepEqual(saved.query.filters,selection.filters);assert.deepEqual(saved.query.columns,selection.columns);assert.equal(saved.source.content_sha256,source.content_sha256);assert.deepEqual(saved.result.items.map(item=>item.record),[{round_number:1,damage:0,deaths:1}]);
  const recovery=await events(await handler(new Request('https://example.test/api/coach?conversation_id='+conversation.id,{headers:{accept:'text/event-stream'}})));assert.deepEqual(recovery.map(event=>event.type),['snapshot','validated','completed']);assert.deepEqual(recovery.find(event=>event.type==='validated').payload.agent.visualizations[0].provenance[0].source,source);assert.equal(models,3);assert.deepEqual(await store.load(`coach/v3/${owner}/sessions/${conversation.id}.json`),before);
+});
+
+test('actual frontend session consumes handler SSE raw-filter projections through stage display, final report and GET recovery',async()=>{
+ const store=createMemoryAgentStore(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},lifetime=[];let models=0,posts=0,reference,candidate,providerError,releaseFinal,showStage;
+ const finalGate=new Promise(resolve=>releaseFinal=resolve),stageSeen=new Promise(resolve=>showStage=resolve),handler=createCoachHandler({sessionStore:store,loadSnapshot:async()=>snapshot(),getEnv:()=>({DEEPSEEK_API_KEY:'FIXTURE_ONLY'}),fetchImpl:async(_,options)=>{
+  try{const body=JSON.parse(options.body);models++;
+   if(models===1)return provider(call('query_raw_data',selection,'raw_filter'));
+   if(models===2){reference=JSON.parse(body.input.find(item=>item.type==='function_call_output'&&item.call_id==='raw_filter').output).query_evidence_ref;candidate=visual(reference);return provider(call('validate_visualization',{visualizations:[candidate]},'raw_visual'));}
+   assert.equal(models,3);const checked=JSON.parse(body.input.find(item=>item.type==='function_call_output'&&item.call_id==='raw_visual').output);assert.equal(checked.valid,true,JSON.stringify(checked));await finalGate;return provider(call('present_coach_analysis',report(reference,[candidate]),'raw_report'));
+  }catch(error){providerError=error;throw error;}
+ }}),fetchImpl=async(url,options={})=>{const headers=new Headers(options.headers);if(options.method==='POST'){headers.set('origin','https://example.test');posts++;}return handler(new Request(new URL(url,'https://example.test'),{...options,headers}),{waitUntil:promise=>lifetime.push(promise)});};
+ const session=createCoachSession({storage,fetchImpl});let running,stageTimeout;
+ const unsubscribe=session.subscribe(state=>{if(state.stageArtifact)showStage(state);});
+ try{
+  running=session.run({question:'核查指定比赛的零伤害阵亡原始条件。',context:{view:'coach',match_id:match,data_scope:'current_selection',source}});
+  const staged=await Promise.race([stageSeen,new Promise((_,reject)=>stageTimeout=setTimeout(()=>reject(Error('Frontend did not accept the projected stage artifact')),1500))]);clearTimeout(stageTimeout);
+  assert.equal(staged.error,'');assert.equal(staged.busy,true);assert.equal(staged.result,null);assert.deepEqual(staged.stageArtifact.visualizations[0].provenance[0].path,['items']);assert.deepEqual(staged.stageArtifact.visualizations[0].provenance[0].source,source);assert.equal(staged.stageArtifact.visualizations[0].data.rows[0].record.damage,0);
+  releaseFinal();await running;if(providerError)throw providerError;
+  const final=session.getState();assert.equal(final.error,'');assert.equal(final.task.status,'completed');assert.equal(final.result.analysis.headline,report(reference).headline);assert.deepEqual(final.result.agent.visualizations[0].provenance[0].source,source);assert.equal(final.result.agent.visualizations[0].data.rows[0].record.damage,0);assert.equal(models,3);assert.equal(posts,1);
+  const progress=structuredClone(final.task.progress),turn=final.conversation.turn_id;await session.refreshTask();const restored=session.getState();assert.equal(restored.error,'');assert.equal(restored.conversation.turn_id,turn);assert.deepEqual(restored.task.progress,progress);assert.deepEqual(restored.result.agent.visualizations,final.result.agent.visualizations);assert.equal(models,3);assert.equal(posts,1);
+ }finally{clearTimeout(stageTimeout);releaseFinal();unsubscribe();session.destroy();if(running)await running.catch(()=>{});await Promise.all(lifetime);}
 });
 
 test('archive and observed query normalization preserve raw predicates without injecting pagination defaults or widening plan scopes',async()=>{
