@@ -1,2 +1,2 @@
-# Verified against a real CS2 Valve replay. Keep parser behavior reproducible.
-demoparser2==0.42.0
+# 0.42.2 supports the fixed8 encoder introduced by CS2 build 14197.
+demoparser2==0.42.2

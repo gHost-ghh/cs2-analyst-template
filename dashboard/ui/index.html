@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#0b1119">
   <meta name="description" content="CS2 专属数据工作台。瞄准、射击、对局趋势与战术回放。">
   <title>CS2 METRICS · 个人竞技分析</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/cs2-metrics.svg">
   <link rel="stylesheet" href="/assets/styles.css">
   <link rel="stylesheet" href="/assets/players.css">
   <link rel="stylesheet" href="/assets/coach.css">
@@ -18,7 +19,10 @@
   <a class="skip-link" href="#main">跳转到主要内容</a>
   <div class="shell">
     <aside class="sidebar" aria-label="主导航">
-      <a class="brand" href="#overview" aria-label="CS2 Metrics 首页"><span class="brand-mark" aria-hidden="true">M</span><span>CS2<span class="brand-sub">METRICS</span></span></a>
+      <a class="brand" href="#overview" aria-label="CS2 Metrics 首页">
+        <img class="brand-mark" src="/assets/cs2-metrics.svg" width="42" height="42" alt="">
+        <span>CS2<span class="brand-sub">METRICS</span></span>
+      </a>
       <div class="workspace-label">ANALYTICS WORKSPACE</div>
       <nav class="nav" aria-label="分析视图">
         <a href="#overview" data-view="overview" class="nav-item active"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>表现总览</span></a>
@@ -33,7 +37,14 @@
       <div class="sidebar-bottom"><div class="avatar">GH</div><div><strong id="player-name">我的 CS2 档案</strong><span>私人分析空间</span></div><span class="private-icon" aria-label="私人空间">⌑</span></div>
     </aside>
     <div class="main-shell">
-      <header class="topbar"><span class="breadcrumb">个人竞技分析 <span>/</span> <strong id="breadcrumb-view">表现总览</strong></span><div class="topbar-actions"><span class="privacy-badge">PRIVATE WORKSPACE</span><div class="sync-actions"><button id="refresh-button" class="button button-quiet" type="button"><span aria-hidden="true">↻</span> 同步 Demo</button><button id="sync-result-button" class="text-button" type="button" aria-controls="sync-receipt" hidden>查看本次同步结果</button></div></div></header>
+      <header class="topbar"><div class="breadcrumb">
+        <span class="breadcrumb-name">个人竞技分析</span>
+        <a class="mobile-brand" href="#overview" aria-label="CS2 Metrics 首页">
+          <img class="brand-mark" src="/assets/cs2-metrics.svg" width="22" height="22" alt="">
+          CS2 Metrics
+        </a>
+        <span>/</span> <strong id="breadcrumb-view">表现总览</strong>
+      </div><div class="topbar-actions"><span class="privacy-badge">PRIVATE WORKSPACE</span><div class="sync-actions"><button id="refresh-button" class="button button-quiet" type="button"><span aria-hidden="true">↻</span> 同步 Demo</button><button id="sync-result-button" class="text-button" type="button" aria-controls="sync-receipt" hidden>查看本次同步结果</button></div></div></header>
       <main id="main" tabindex="-1">
         <div class="page-heading"><div><div class="page-kicker" id="page-kicker">PERFORMANCE OVERVIEW</div><h1 id="page-title">表现总览</h1><p id="page-subtitle">对局表现与回合贡献</p></div><div class="updated-at"><span class="live-dot"></span><span id="updated-label">正在读取数据</span></div></div>
         <div id="notice" class="notice" role="status" hidden></div>

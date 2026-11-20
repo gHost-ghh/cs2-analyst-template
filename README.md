@@ -34,6 +34,7 @@
 - [系统架构与数据流](docs/ARCHITECTURE.md)
 - [指标口径与证据边界](docs/METRICS.md)
 - [故障处理](docs/TROUBLESHOOTING.md)
+- [版本更新与迁移](docs/UPGRADING.md)
 - [第三方组件和素材说明](THIRD_PARTY_NOTICES.md)
 
 模板不会承诺取回所有历史 Demo：Steam GC 窗口有限，旧下载可能已失效。缺失和失败数据不会自动变成零表现。原生片段只有经过真实捕获和证据校验才标记已渲染。

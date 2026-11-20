@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {once} from 'node:events';
 import fs from 'node:fs/promises';
 import {makeWorker} from '../worker/server.mjs';
+import {createPreviewServer} from './preview.mjs';
 const empty={schema_version:'1.0',generated_at:'2000-01-01T00:00:00Z',profile:{steamid64:'76561198000000000',name:'Synthetic Player'},matches:[],source:{analysis_version:'2.6'},summary:{matches:0,rounds:0},coverage:{},player_directory:[],training_plan:[],limitations:[]};
 test('independent empty owner Dashboard and MCP need no model key',async()=>{
  const worker=makeWorker({initial:empty,page:'<!doctype html><title>CS2</title>',assets:{}});
@@ -14,4 +16,21 @@ test('independent empty owner Dashboard and MCP need no model key',async()=>{
 test('repository bootstrap contains zero matches rather than author data',async()=>{
  const data=JSON.parse(await fs.readFile(new URL('../data/dashboard.json',import.meta.url),'utf8'));assert.deepEqual(data.matches,[]);assert.equal(data.schema_version,'1.0');
  const manifest=JSON.parse(await fs.readFile(new URL('../.openai/hosting.json',import.meta.url),'utf8'));assert.ok(manifest.capabilities.includes('mcp'));assert.equal(manifest.r2,'BUCKET');
+});
+
+test('the portable preview serves the same mark to the browser tab and both navigation headers',async t=>{
+ const preview=createPreviewServer();
+ t.after(()=>new Promise(resolve=>preview.close(resolve)));
+ preview.listen(0,'127.0.0.1');
+ await once(preview,'listening');
+ const origin=`http://127.0.0.1:${preview.address().port}`;
+ const home=await fetch(origin);
+ assert.equal(home.status,200);
+ const html=await home.text();
+ assert.match(html,/<link rel="icon" type="image\/svg\+xml" href="\/assets\/cs2-metrics\.svg">/);
+ assert.equal([...html.matchAll(/<img class="brand-mark" src="\/assets\/cs2-metrics\.svg"/g)].length,2);
+ const logo=await fetch(`${origin}/assets/cs2-metrics.svg`);
+ assert.equal(logo.status,200);
+ assert.equal(logo.headers.get('content-type'),'image/svg+xml');
+ assert.deepEqual(Buffer.from(await logo.arrayBuffer()),await fs.readFile(new URL('../ui/cs2-metrics.svg',import.meta.url)));
 });

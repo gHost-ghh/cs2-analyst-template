@@ -11,6 +11,7 @@ const [agentWorkflow,agentReasoning,agentRegistry,workflowClient,workflowCss,rea
 const parsed=JSON.parse(manifest); if(!parsed.project_id)throw Error('Registered project_id required');
 const dataset=JSON.parse(initial); if(dataset.schema_version!=='1.0'||!Array.isArray(dataset.matches))throw Error('Reviewed dashboard dataset required');
 const assets={};
+assets['/assets/cs2-metrics.svg']={base64:(await fs.readFile(path.join(root,'ui/cs2-metrics.svg'))).toString('base64'),type:'image/svg+xml'};
 const radarFiles=(await fs.readdir(path.join(root,'assets/radars'),{withFileTypes:true}))
  .filter(entry=>entry.isFile()&&entry.name.endsWith('.png'))
  .map(entry=>entry.name).sort();

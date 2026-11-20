@@ -10,6 +10,7 @@ export function createPreviewServer(){const coachSessionStore=createMemoryAgentS
  try{
  const initial=JSON.parse(await read('data/dashboard.json'));
  const assets={};
+ assets['/assets/cs2-metrics.svg']={base64:(await fs.readFile(new URL('ui/cs2-metrics.svg',root))).toString('base64'),type:'image/svg+xml'};
  const radarFiles=(await fs.readdir(new URL('assets/radars/',root),{withFileTypes:true}))
   .filter(entry=>entry.isFile()&&entry.name.endsWith('.png'))
   .map(entry=>entry.name).sort();

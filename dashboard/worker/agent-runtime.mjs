@@ -11,7 +11,8 @@ const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}
 const OPERATIONS=['read_data','validate_visual','present'];
 const PLAN_ACTIONS=['set','append','revise','reorder','activate','defer','cancel'];
 const STEP=/^[a-z][a-z0-9_-]{0,39}$/;
-const LEASE_MS=150000,MAX_RECORD_BYTES=768*1024,RECENT_TURNS=8,MAX_PLAN_REVISIONS=16;
+export const AGENT_MAX_RECORD_BYTES=768*1024;
+const LEASE_MS=150000,MAX_RECORD_BYTES=AGENT_MAX_RECORD_BYTES,RECENT_TURNS=8,MAX_PLAN_REVISIONS=16;
 // These failures may be fixed outside the task. Recovery still requires an
 // explicit resume of the current unfinished turn; GET never retries a model.
 const MANUAL_PROVIDER_FAILURES=new Set(['provider_request_failed','provider_auth_failed','provider_quota_exceeded','provider_rate_limited']);

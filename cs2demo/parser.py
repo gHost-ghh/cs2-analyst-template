@@ -1,4 +1,4 @@
-"""CS2 .dem adapter, verified with demoparser2 0.42.0 on Python 3.12."""
+"""CS2 .dem adapter for the version pinned in requirements-demo.txt."""
 
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ def _guard_event_velocity(events, tickrate):
                         row[key] = None
     return {"status": "estimated" if supported else "unavailable",
             "reason": None if supported else "pinned_event_parser_velocity_requires_64hz",
-            "definition": "demoparser2 0.42.0 full-event parsing keeps consecutive position history and multiplies its previous-position difference by 64. It is a lagged server-demo estimate, not client input or exact subtick velocity. Non-64Hz event motion is unavailable."}
+            "definition": "demoparser2 full-event parsing keeps consecutive position history and multiplies its previous-position difference by 64. It is a lagged server-demo estimate, not client input or exact subtick velocity. Non-64Hz event motion is unavailable."}
 
 
 def _dense_ticks(events, windows, steamid, tickrate):

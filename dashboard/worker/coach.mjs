@@ -51,9 +51,18 @@ function coachJson(value,status=200,extra={}){return new Response(JSON.stringify
 export class CoachError extends Error {constructor(code,status=503,retryAfter){super(code);this.code=code;this.status=status;this.retryAfter=retryAfter;}}
 function coachProvider(env){return env.COACH_PROVIDER==='openai'?'openai':'deepseek';}
 function coachKey(env){const value=coachProvider(env)==='openai'?env.OPENAI_API_KEY:env.DEEPSEEK_API_KEY;return typeof value==='string'?value.trim():'';}
-export function coachStatus(env={}) {
+function hostWorkBudget(executionWindow){
+  const timeout=executionWindow?.host_timeout_ms;
+  // Leave time to persist the pause and release the lease after transport ends.
+  return Number.isSafeInteger(timeout)&&timeout>0?timeout-Math.min(5000,Math.floor(timeout/10)):Infinity;
+}
+export function coachStatus(env={},executionWindow) {
   const provider=coachProvider(env),key=coachKey(env),invalid=Boolean(key)&&!/^[\x21-\x7e]+$/.test(key),configured=Boolean(key)&&!invalid;
-  return {version:COACH_VERSION,status:configured?'ready':'not_configured',provider,model:configured?coachModel(env):null,...(provider==='deepseek'&&coachModel(env)==='deepseek-flash'?{provider_capacity:DEEPSEEK_FLASH_CAPACITY}:{}),...(invalid?{configuration_issue:'provider_key_format_invalid'}:{}),limits:{daily_requests:null,cooldown_seconds:null,output_tokens:null,api_calls:AGENT_EXECUTION_WINDOW.api_calls,tool_calls:AGENT_EXECUTION_WINDOW.tool_calls,timeout_ms:AGENT_EXECUTION_WINDOW.timeout_ms},execution:{scheduling_timeout_ms:AGENT_EXECUTION_WINDOW.timeout_ms,...COACH_PROVIDER_EXECUTION},capabilities:{task_modes:Object.keys(COACH_TASK_MODES),read_only_tools:true,manual_actions:true,history:'server_validated_session',resumable_tasks:true,semantic_data_tools:29,task_planning:true},analysis:null};
+  const window=executionWindow??AGENT_EXECUTION_WINDOW,hostBudget=hostWorkBudget(window);
+  const schedulingTimeout=Math.min(window.timeout_ms,hostBudget);
+  const providerTimeout=Math.min(window.provider_timeout_ms??COACH_PROVIDER_EXECUTION.timeout_ms,COACH_PROVIDER_EXECUTION.timeout_ms,hostBudget);
+  const idleTimeout=Math.min(window.provider_idle_timeout_ms??COACH_PROVIDER_EXECUTION.idle_timeout_ms,providerTimeout);
+  return {version:COACH_VERSION,status:configured?'ready':'not_configured',provider,model:configured?coachModel(env):null,...(provider==='deepseek'&&coachModel(env)==='deepseek-flash'?{provider_capacity:DEEPSEEK_FLASH_CAPACITY}:{}),...(invalid?{configuration_issue:'provider_key_format_invalid'}:{}),limits:{daily_requests:null,cooldown_seconds:null,output_tokens:null,api_calls:window.api_calls,tool_calls:window.tool_calls,timeout_ms:schedulingTimeout},execution:{scheduling_timeout_ms:schedulingTimeout,...COACH_PROVIDER_EXECUTION,timeout_ms:providerTimeout,idle_timeout_ms:idleTimeout,...(Number.isFinite(hostBudget)?{host_timeout_ms:window.host_timeout_ms}:{})},capabilities:{task_modes:Object.keys(COACH_TASK_MODES),read_only_tools:true,manual_actions:true,history:'server_validated_session',resumable_tasks:true,semantic_data_tools:29,task_planning:true},analysis:null};
 }
 function coachProviderRequest({signal,timeoutMs,idleTimeoutMs}){
   const abort=new AbortController(),combined=signal?AbortSignal.any([signal,abort.signal]):abort.signal;let idle,expired=false;
@@ -264,10 +273,10 @@ function coachModelTask(task){
   // validated stage identity and exact bindings, not another copy of raw data.
   return {...task,stage_artifact:{source:artifact.source,projection:'metadata_only',validation:{valid:true},visualizations:artifact.visualizations.map(visual=>({title:visual.title,description:visual.description,kind:visual.document?.kind,evidence_refs:visual.evidence_refs,bindings:(visual.provenance??[]).map(binding=>({name:binding.name,query_ref:binding.query_ref,...(Object.hasOwn(binding,'path')?{path:binding.path}:{})}))})),evidence_count:artifact.evidence?.length??0}};
 }
-export async function runCoach({snapshot,delivery={},loadMatch,loadStatistics,loadNativeCapture,question,context={},task:requestedTask,env={},fetchImpl=fetch,signal,now=()=>Date.now(),onDiagnostic=record=>console.warn(JSON.stringify(record)),session,onEvent,executionWindow}) {
+export async function runCoach({snapshot,delivery={},loadMatch,loadStatistics,loadNativeCapture,question,context={},task:requestedTask,env={},fetchImpl=fetch,signal,now=()=>Date.now(),onDiagnostic=record=>console.warn(JSON.stringify(record)),session,onEvent,executionWindow,hostDeadline=Infinity}) {
   const readiness=coachStatus(env);if(!readiness.model)throw new CoachError(readiness.configuration_issue??'not_configured',503);
   if(!snapshot||!Array.isArray(snapshot.matches)||!snapshot.matches.length)throw new CoachError('snapshot_unavailable',503);
-  const windowLimits=session?(executionWindow??AGENT_EXECUTION_WINDOW):COACH_LIMITS,deadline=now()+windowLimits.timeout_ms,task=coachTask(requestedTask,context),evidence=new Map(),queryResults=new Map(),queries=[],toolErrors=[],budget={api_calls:0,tool_calls:0,tool_bytes:0,input_tokens:0,output_tokens:0},cache=new Map();
+  const windowLimits=session?(executionWindow??AGENT_EXECUTION_WINDOW):COACH_LIMITS,deadline=Math.min(now()+windowLimits.timeout_ms,hostDeadline),task=coachTask(requestedTask,context),evidence=new Map(),queryResults=new Map(),queries=[],toolErrors=[],budget={api_calls:0,tool_calls:0,tool_bytes:0,input_tokens:0,output_tokens:0},cache=new Map();
   const source={source_revision:delivery.source_revision??snapshot.delivery?.source_revision??null,generated_at:snapshot.generated_at??null,content_sha256:delivery.content_sha256??snapshot.delivery?.content_sha256??null};
   const requestContext={question,task,current_context:{...context,source}},input=[{role:'user',content:JSON.stringify(requestContext)}],presentationFeedback=[];
   const work=session?.turn.work;
@@ -583,12 +592,23 @@ export async function runCoach({snapshot,delivery={},loadMatch,loadStatistics,lo
       // request, including instructions/tools/history/repair feedback. Bytes
       // are not claimed to be the provider's exact token count.
       if(requestBytes>MODEL_REQUEST_BYTES){if(session)return pause('provider_context_input_too_large');throw new CoachError('provider_context_input_too_large',422);}
+      const providerLimit=session?Math.min(COACH_PROVIDER_EXECUTION.timeout_ms,windowLimits.provider_timeout_ms??COACH_PROVIDER_EXECUTION.timeout_ms):Infinity;
+      const providerDeadline=session?hostDeadline:deadline;
+      const remainingProviderTime=()=>Math.min(providerLimit,providerDeadline-now());
+      if(remainingProviderTime()<=0){if(session)return pause('execution_window_timeout');throw new CoachError('provider_timeout',504);}
       budget.last_request_bytes=requestBytes;if(sourceManifest)budget.statistics_context_bytes=coachText.encode(JSON.stringify(statisticsContext)).byteLength;delete budget.bulk_statistics_bytes;
       budget.api_calls++;windowUsage.api_calls++;await save();
       streamAttempt=budget.api_calls;await event('draft_reset',{});await event('status',{phase:last?(presentationFeedback.length?'repairing':'presenting'):'generating'});
       if(provider==='deepseek'&&session){providerTrace=createProviderTraceCollector({attempt:streamAttempt,provider,model,emit:payload=>publish('provider_trace',payload),persist:value=>session.providerTrace(value),now});await providerTrace.start();}
-      const providerTimeout=session?Math.max(1,Math.min(COACH_PROVIDER_EXECUTION.timeout_ms,windowLimits.provider_timeout_ms??COACH_PROVIDER_EXECUTION.timeout_ms)):Math.max(1,deadline-now()),idleTimeout=Math.max(1,Math.min(providerTimeout,windowLimits.provider_idle_timeout_ms??COACH_PROVIDER_EXECUTION.idle_timeout_ms));
-      if(session)await session.reserveProviderLease(providerTimeout+COACH_PROVIDER_EXECUTION.lease_margin_ms);
+      if(session)await session.reserveProviderLease(Math.max(1,Math.floor(remainingProviderTime()))+COACH_PROVIDER_EXECUTION.lease_margin_ms);
+      const providerTimeout=remainingProviderTime();
+      if(providerTimeout<=0){
+        budget.api_calls--;windowUsage.api_calls--;
+        await providerTrace?.finish('interrupted');
+        if(session)return pause('execution_window_timeout');
+        throw new CoachError('provider_timeout',504);
+      }
+      const idleTimeout=Math.max(1,Math.min(providerTimeout,windowLimits.provider_idle_timeout_ms??COACH_PROVIDER_EXECUTION.idle_timeout_ms));
       providerRequest=coachProviderRequest({signal,timeoutMs:providerTimeout,idleTimeoutMs:idleTimeout});
       response=await fetchImpl(endpoint,{method:'POST',redirect:'manual',headers:{authorization:`Bearer ${apiKey}`,'content-type':'application/json'},body:requestBody,signal:providerRequest.signal});
       stage='body';response=providerRequest.response(response);
@@ -732,6 +752,8 @@ export function createCoachHandler({loadSnapshot,loadMatch,loadStatistics,loadNa
   let active=false,runtime;
   const runtimeFor=snapshot=>runtime??=createAgentRuntime({owner:sessionOwner??snapshot.profile?.steamid64,store:sessionStore,now});
   return async(request,execution={})=>{
+    const hostBudget=hostWorkBudget(executionWindow);
+    const hostDeadline=Number.isFinite(hostBudget)?now()+hostBudget:Infinity;
     let session,ownsActive=false,streamOwnsActive=false;
     const fail=async error=>{
       const known=error instanceof CoachError||error instanceof AgentRuntimeError||error instanceof AgentStreamError;
@@ -743,7 +765,7 @@ export function createCoachHandler({loadSnapshot,loadMatch,loadStatistics,loadNa
       const streaming=/\btext\/event-stream\b/i.test(request.headers.get('accept')??'');
       if(origin&&origin!==ownOrigin)throw new CoachError('origin_rejected',403);
       if(!['GET','POST'].includes(request.method))throw new CoachError('method_not_allowed',405);
-      const env=await getEnv(),status=coachStatus(env);
+      const env=await getEnv(),status=coachStatus(env,executionWindow);
       if(request.method==='GET'){
         const conversationId=url.searchParams.get('conversation_id'),conversations=url.searchParams.get('conversations'),history=url.searchParams.get('history'),turnId=url.searchParams.get('turn_id'),queryRef=url.searchParams.get('query_ref');
         if(url.searchParams.has('query_ref')&&(!queryRef||!conversationId||!turnId||streaming||[...url.searchParams.keys()].some(key=>!['conversation_id','turn_id','query_ref'].includes(key))))throw new CoachError('invalid_query_archive',400);
@@ -780,7 +802,7 @@ export function createCoachHandler({loadSnapshot,loadMatch,loadStatistics,loadNa
           session=await runtimeFor(snapshot).begin({...input,source});
           if(session.existing&&!streaming)return coachJson({...session.result,...session.public()});
         }
-        const run=options=>runCoach({snapshot,delivery:snapshot.delivery??{},loadMatch,loadStatistics,loadNativeCapture,question:session?.turn.question??input.question,context:session?.turn.context??input.context,task:session?.turn.task??input.task,env,fetchImpl,signal:request.signal,now,session,executionWindow,...options});
+        const run=options=>runCoach({snapshot,delivery:snapshot.delivery??{},loadMatch,loadStatistics,loadNativeCapture,question:session?.turn.question??input.question,context:session?.turn.context??input.context,task:session?.turn.task??input.task,env,fetchImpl,signal:request.signal,now,session,executionWindow,hostDeadline,...options});
         if(!streaming)return coachJson(await run());
         let attempt=session.public().task.progress.model_calls,finalSource;
         const stream=createAgentStreamResponse({binding:()=>{const current=session.public();return {session:current.session,source:finalSource??current.task.source,attempt};},signal:request.signal,waitUntil:execution.waitUntil,now,execute:async({emit,signal})=>{
