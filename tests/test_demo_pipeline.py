@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from cs2demo.download import MAGIC
 from cs2demo.advanced import ANALYSIS_VERSION
@@ -314,6 +314,32 @@ class PipelineTests(unittest.TestCase):
             result = run_pipeline(Path(tmp), SID)
             self.assertEqual(result['run_outcome'], 'deferred_steam_playing_elsewhere')
             self.assertEqual(result['deferred_this_run'], 0)
+
+    def test_live_checkpoints_bind_progress_to_current_workflow_attempt(self):
+        environment = {'GITHUB_ACTIONS': 'true', 'GITHUB_RUN_ID': '39101234567', 'GITHUB_RUN_ATTEMPT': '2'}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, environment, clear=True):
+            root = Path(tmp)
+            replay = root / 'input.dem'
+            replay.write_bytes(MAGIC + b'fixture')
+            published = []
+            publisher = Mock()
+            publisher.publish.side_effect = lambda **_: published.append(
+                json.loads((root / 'reports/demo_status.json').read_text()))
+            result = run_pipeline(root, SID, local_demo=replay, parser=fake_parse, checkpoint_publisher=publisher)
+            self.assertEqual(result['run_outcome'], 'ok')
+            self.assertEqual([item['run_outcome'] for item in published], ['partial', 'ok'])
+            for item in published:
+                self.assertEqual(item['workflow_run_id'], '39101234567')
+                self.assertEqual(item['workflow_run_attempt'], 2)
+                self.assertEqual(item['selected_this_run'], 1)
+                self.assertEqual(item['attempted_this_run'], 1)
+                self.assertEqual(item['completed_this_run'], 1)
+                self.assertEqual(item['status_counts']['complete'], 1)
+            with patch.dict(os.environ, {'GITHUB_ACTIONS': 'false'}):
+                run_pipeline(root, SID)
+            local_status = json.loads((root / 'reports/demo_status.json').read_text())
+            self.assertNotIn('workflow_run_id', local_status)
+            self.assertNotIn('workflow_run_attempt', local_status)
 
     def test_deferred_resolution_does_not_hide_an_independent_parser_error(self):
         other_code = 'CSGO-GADqf-jjyJ8-cSP2r-smZRo-TO2xK'

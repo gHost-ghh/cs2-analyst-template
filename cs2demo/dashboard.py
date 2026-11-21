@@ -415,9 +415,10 @@ def generate_dashboard(data_dir: Path, reports_dir: Path, steamid: str, *, valid
         "player_directory": _clean(build_player_directory(exported_matches, str(steamid))),
         "training_plan": _training_plan(matches), "ai_coach": _ai_coach(),
     }
-    deferred = worker.get("deferred_this_run")
-    if type(deferred) is int and 0 <= deferred <= 20:
-        result["sync"]["deferred_this_run"] = deferred
+    for key in ("deferred_this_run", "selected_this_run"):
+        count = worker.get(key)
+        if type(count) is int and 0 <= count <= 20:
+            result["sync"][key] = count
     canonical = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     result["source"]["snapshot_sha256"] = hashlib.sha256(canonical.encode()).hexdigest()
     from .transport import export_dashboard_transport

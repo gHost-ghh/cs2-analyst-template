@@ -40,6 +40,7 @@ let fetchController = null;
 let playersController = null, playersSelection = {};
 let coachSurfaceExpanded=false;
 let coachController=null,coachSession=null,coachSurfaceController=null,coachSurfaceHost=null,coachSectionFocus=null,coachContext=null,coachEvidenceTarget=null,coachReplayTarget=null,syncController=null,nativeController=null,nativeKey=null;
+let syncProgressView=null;
 const matchDetailCache=new Map(),matchDetailErrors=new Map(),normalizedDetailMatches=new WeakMap();
 const MAX_MATCH_BYTES=16*1024*1024;
 let rawDashboardSnapshot=null,matchDetailRequest=null,exportController=null;
@@ -428,8 +429,11 @@ function normalizeData(payload) {
 async function loadData() {
   if(state.refreshing) return;
   state.refreshing=true;
-  $('#refresh-button').disabled=true;
-  $('#refresh-button').innerHTML='<span aria-hidden="true">↻</span> 正在刷新';
+  const syncButton=$('#refresh-button'),syncLabel=$('[data-sync-label]',syncButton);
+  syncButton.disabled=true;
+  syncButton.dataset.syncState='loading_snapshot';
+  syncButton.setAttribute('aria-busy','true');
+  if(syncLabel)syncLabel.textContent='正在读取数据';
   $('#notice').hidden=true;
   if(!state.data){$('#loading').hidden=false;$('#fatal-error').hidden=true;}
   fetchController=new AbortController();
@@ -452,14 +456,22 @@ async function loadData() {
   } catch(error) {
     const message=error.name==='AbortError'?'连接超时，请稍后重试。':error.message||'暂时无法连接分析服务。';
     if(state.data){showNotice(`${message} 已保留当前已加载的数据。`,'error');} else {$('#loading').hidden=true;$('#fatal-error').hidden=false;$('#fatal-error-message').textContent=message;}
-  } finally {clearTimeout(timeout);state.refreshing=false;if(syncController)syncController.repaint();else{$('#refresh-button').disabled=false;$('#refresh-button').textContent='↻ 同步 Demo';}}
+  } finally {
+    clearTimeout(timeout);state.refreshing=false;
+    if(syncController)syncController.repaint();
+    else {
+      syncButton.disabled=false;syncButton.dataset.syncState='idle';syncButton.removeAttribute('aria-busy');
+      if(syncLabel)syncLabel.textContent='同步 Demo';
+    }
+  }
 }
 function payloadStale(data){return data.source?.stale===true;}
 function showNotice(message,tone=''){const notice=$('#notice');notice.className=`notice ${tone}`;notice.textContent=message;notice.hidden=false;}
 function stopPlayback(){stopAimPlayback();state.playing=false;if(state.timer!==null&&typeof cancelAnimationFrame==='function')cancelAnimationFrame(state.timer);clearInterval(state.timer);state.timer=null;const button=$('#play-path');if(button){button.textContent='▶';button.setAttribute('aria-label','播放回合回放');button.setAttribute('aria-pressed','false');}}
 function cancelReplayDecode(){if(replayDecode){replayDecode.controller.abort();replayDecode=null;}if(replayShotDecode){replayShotDecode.controller.abort();replayShotDecode=null;}}
 function cancelAimDecode(){if(aimTrajectoryDecode){aimTrajectoryDecode.controller.abort();aimTrajectoryDecode=null;}}
-function navigate(view, focus=false){if(!titles[view])view='overview';if(view!==state.view)coachSectionFocus=null;if(view==='coach'&&state.view!=='coach'&&state.data)coachContext=analysisContext();stopPlayback();if(view!=='replay'){cancelReplayDecode();coachReplayTarget=null;}if(view!=='mechanics'){cancelAimDecode();coachEvidenceTarget=null;}state.view=view;const [label,title,subtitle,kicker]=titles[view];$('#breadcrumb-view').textContent=label;$('#page-title').textContent=title;$('#page-kicker').textContent=kicker;$('#page-subtitle').textContent=subtitle;$$('[data-view]').forEach(link=>{const active=link.dataset.view===view;link.classList.toggle('active',active);if(active)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');});$$('.view-section').forEach(section=>section.hidden=section.id!==`view-${view}`);if(state.data)render();if(focus)$('#main').focus({preventScroll:true});}
+function watchSyncProgress(){syncController?.watch?.(state.view==='sources'&&!document.hidden);}
+function navigate(view, focus=false){if(!titles[view])view='overview';if(view!==state.view)coachSectionFocus=null;if(view==='coach'&&state.view!=='coach'&&state.data)coachContext=analysisContext();stopPlayback();if(view!=='replay'){cancelReplayDecode();coachReplayTarget=null;}if(view!=='mechanics'){cancelAimDecode();coachEvidenceTarget=null;}state.view=view;const [label,title,subtitle,kicker]=titles[view];$('#breadcrumb-view').textContent=label;$('#page-title').textContent=title;$('#page-kicker').textContent=kicker;$('#page-subtitle').textContent=subtitle;$$('[data-view]').forEach(link=>{const active=link.dataset.view===view;link.classList.toggle('active',active);if(active)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');});$$('.view-section').forEach(section=>section.hidden=section.id!==`view-${view}`);if(state.data)render();watchSyncProgress();if(focus)$('#main').focus({preventScroll:true});}
 function render(){
   if(!state.data)return;
   coachSurfaceController?.destroy();coachSurfaceController=null;coachSurfaceHost?.remove();coachSurfaceHost=null;
@@ -468,7 +480,7 @@ function render(){
   if(state.view!=='players'&&playersController){playersController.destroy();playersController=null;}
   if(requiresStatistics)requestStatistics(statisticsMatches);else{cancelStatistics();const wanted=new Set(statisticsMatches.map(match=>detailKey(match.statistics_ref)));for(const key of statisticsCache.keys())if(!wanted.has(key))statisticsCache.delete(key);}
   $('#sidebar-matches').textContent=String(state.data.matches.length);$('#sidebar-rounds').textContent=`${state.data.matches.reduce((n,m)=>n+m.rounds.length,0)} 回合`;
-  if(requiresStatistics&&!statisticsReady(statisticsMatches)){stopPlayback();cancelMatchDetail();if(playersController){playersController.destroy();playersController=null;}$$('.view-section').forEach(section=>{section.hidden=section.id!==`view-${state.view}`;if(!section.hidden)section.innerHTML=statisticsState(statisticsMatches);});return;}
+  if(requiresStatistics&&!statisticsReady(statisticsMatches)){stopPlayback();cancelMatchDetail();if(playersController){playersController.destroy();playersController=null;}$$('.view-section').forEach(section=>{section.hidden=section.id!==`view-${state.view}`;if(!section.hidden)section.innerHTML=state.view==='sources'?sourcesView(false):statisticsState(statisticsMatches);});return;}
   const focused=document.activeElement,focusId=focused?.id,burstKind=focused?.dataset?.burstKind;stopPlayback();ensureSelection();const scope=currentScope();applyCoachEvidenceTarget(scope);const detailId=desiredDetailMatchId(scope);if(matchDetailRequest?.id!==detailId)cancelMatchDetail();if(detailId)requestMatchDetail(detailId);const views={overview,matches:matchView,mechanics:mechanicsView,replay:replayView,sources:sourcesView};$$('.view-section').forEach(section=>{const active=section.id===`view-${state.view}`;section.hidden=!active;if(['view-players','view-coach'].includes(section.id))return;section.innerHTML=active?views[state.view](scope):'';});if(state.view==='players')renderPlayersView();if(state.view==='coach')renderCoachView();else renderCoachSurface();if(state.view==='replay'&&!needsMatchDetail(detailId))updatePath();if(state.view==='mechanics'&&state.labTab==='playback'&&!needsMatchDetail(detailId))updateAimFrame();if(focusId)document.getElementById(focusId)?.focus({preventScroll:true});else if(burstKind)document.querySelector('[data-burst-kind="'+burstKind+'"]')?.focus({preventScroll:true});
 }
 function applyCoachEvidenceTarget(scope){
@@ -893,13 +905,191 @@ function updateLegacyPath(){
   $('#position-time').textContent=stamp(at);$('#position-time-detail').textContent=seconds(at);$('#position-height').textContent=format(current.z,1);$('#position-place').textContent=current.place||current.place_name||'未提供区域名';$('#path-coordinates').textContent=`X ${format(current.x)}   Y ${format(current.y)}   ·   ${index+1} / ${positions.length}`;$('#position-scrubber').value=String(index);$('#position-scrubber').setAttribute('aria-valuetext',`${seconds(at)}，X ${format(current.x)}，Y ${format(current.y)}`);$('#path-stage').setAttribute('aria-label',`第 ${round.round_number} 回合，第 ${index+1} 个存活采样点，${seconds(at)}，X ${format(current.x)}，Y ${format(current.y)}`);
 }
 
-const jobStatus={complete:['已完成','teal'],pending:['待处理','muted'],retry:['等待重试','t'],unavailable:['录像不可用','muted'],blocked_auth:['需要登录配置','red']};
-const errorLabels={download_network_error:'下载网络暂不可用',replay_url_unavailable:'GC 未返回可用录像地址',http_404:'下载服务器返回 404，文件缺失或暂不可用',parser_no_live_rounds:'未识别到完整有效回合',steam_refresh_token_missing:'缺少 Steam 登录配置',parser_timeout:'解析达到时间上限',download_timeout:'下载达到时间上限'};
-function sourcesView(){
-  const d={...state.data,matches:state.data.matches.map(statisticsOverlay)},sync=d.sync||{},counts=sync.status_counts||{},jobs=sync.unfinished_jobs||[],selected=currentMatch()||d.matches[0],replayGames=d.matches.filter(match=>match.replay?.rounds?.length).length,mechanicsGames=d.matches.filter(match=>match.rounds.some(round=>round.analysis?.level3?.mechanics)).length;
-  return `<div class="metric-grid five">${[['complete','已解析','mint'],['pending','待处理','blue'],['retry','重试中','orange'],['unavailable','录像不可用','dim'],['blocked_auth','登录受阻','red']].map(([key,label,tone])=>metricTile(label,format(counts[key]),'','',null,tone)).join('')}</div><div class="data-health-strip"><span><i class="live-dot"></i>最近同步 <strong>${esc(date(sync.last_run_at,true))}</strong></span><span>本次完成 <strong>${format(sync.completed_this_run)}</strong></span><span>回放 <strong>${replayGames} / ${d.matches.length} 场</strong></span><span>枪法分析 <strong>${mechanicsGames} / ${d.matches.length} 场</strong></span></div>
+const jobStatus={complete:['已完成','teal'],pending:['排队中','muted'],retry:['待重试','t'],unavailable:['录像不可用','muted'],blocked_auth:['需要 Steam 登录','red']};
+const errorLabels={
+  download_network_error:'录像服务器暂时无法连接',
+  download_connection_reset:'录像服务器中断了连接',
+  download_socket_timeout:'等待录像服务器响应超时',
+  replay_url_unavailable:'Steam 尚未提供录像地址',
+  gc_url_unavailable:'Steam 尚未提供录像地址',
+  match_unavailable:'Steam 暂未返回该场比赛',
+  http_404:'录像服务器返回 HTTP 404',
+  steam_playing_elsewhere:'Steam 正在使用游戏会话',
+  steam_refresh_token_missing:'缺少 Steam 登录配置',
+  steam_refresh_token_expired:'Steam 登录已过期',
+  steam_refresh_token_rejected:'Steam 拒绝了当前登录',
+  steam_account_mismatch:'Steam 会话和分析账号不一致',
+  parser_no_live_rounds:'未识别到完整有效回合',
+  parser_timeout:'录像解析超时',
+  download_timeout:'录像下载超时',
+  manual_url_required:'需要补充录像来源',
+};
+const syncStatusCopy={
+  idle:['等待同步','可以手动同步，也会按项目设置定时运行。','idle'],
+  dispatching:['正在提交','正在等待同步任务回执。','active'],
+  queued:['任务已排队','等待 GitHub Actions 分配运行环境。','waiting'],
+  in_progress:['正在同步','正在同步比赛数据，当前分析仍可查看。','active'],
+  publishing:['正在更新网站','同步任务已结束，正在应用已验证的数据。','active'],
+  publication_failed:['数据更新未完成','同步任务已结束，可重试将结果更新到网站。','failed'],
+  completed:['同步已结束','请查看本轮处理结果。','success'],
+  failed:['同步未完成','可展开同步阶段或在 GitHub Actions 查看详情。','failed'],
+  unknown:['结果待确认','暂时无法确认运行结果。','waiting'],
+  cooldown:['等待重试','同步请求间隔过短。','waiting'],
+  error:['暂时无法读取同步状态','稍后可以重新检查。','failed'],
+  not_configured:['同步服务尚未配置','可查看网站上次保存的同步数据。','idle'],
+};
+const syncOutcomeCopy={
+  idle:['本轮无需处理录像','本轮没有可处理的录像任务。','success'],
+  ok:['同步已完成','本轮录像任务已处理完成。','success'],
+  partial:['部分任务已完成','其余任务仍保留在处理队列中。','waiting'],
+  failed:['同步未完成','请查看本轮同步阶段及处理队列。','failed'],
+  blocked_auth:['Steam 登录受阻','需要恢复 Steam 登录后才能继续获取录像。','failed'],
+  waiting_for_replays:['等待录像','录像仍在处理队列，系统会按计划重试。','waiting'],
+  deferred_steam_playing_elsewhere:['已推迟同步','Steam 正在进行游戏。需要 Steam 的任务留待后续同步。','waiting'],
+};
+const syncFailureCopy={
+  sync_not_configured:'网站尚未配置同步服务。',
+  github_access_denied:'GitHub 未授权读取或运行同步任务。',
+  github_unavailable:'暂时无法连接 GitHub。',
+  github_rate_limited:'GitHub 暂时限制了查询频率。',
+  workflow_unavailable:'当前同步工作流不可用。',
+  workflow_input_rejected:'GitHub 拒绝了本次同步请求。',
+  sign_in_required:'登录私人工作区后即可同步。',
+  sync_state_unavailable:'暂时无法读取上次同步状态。',
+};
+const syncStepLabels={queued:'待开始',in_progress:'进行中',completed:'已结束',skipped:'已跳过',failed:'未成功',cancelled:'已取消'};
+const activeSyncStatuses=new Set(['dispatching','queued','in_progress','publishing']);
+const syncCount=value=>Number.isSafeInteger(value)&&value>=0?value:null;
+const syncTime=value=>typeof value==='string'&&Number.isFinite(Date.parse(value))?`<time datetime="${esc(value)}">${esc(date(value))}</time>`:'—';
+
+function syncPresentation(view,snapshot){
+  const run=view?.run,publication=view?.publication;
+  const progress=run&&view.progress?.run_id===run.id?view.progress:null;
+  const status=view?.status==='idle'&&run?.status==='completed'?(run.conclusion==='success'?'completed':'failed'):view?.status||'idle';
+  const active=activeSyncStatuses.has(status);
+  const fromSnapshot=!run&&!active&&!progress?.demo&&['idle','error','not_configured'].includes(status);
+  const demo=progress?.demo||(fromSnapshot?snapshot:null);
+  let [title,detail,tone]=syncStatusCopy[status]||syncStatusCopy.unknown;
+  const stage=Array.isArray(progress?.steps)?progress.steps.find(step=>step.state==='in_progress'):null;
+  if(status==='completed'||status==='failed'||status==='idle'&&fromSnapshot){
+    const outcome=syncOutcomeCopy[demo?.run_outcome];
+    if(outcome&&(status!=='failed'||outcome[2]!=='success')){
+      [title,detail,tone]=outcome;
+      if(fromSnapshot)title=`上次同步 · ${title}`;
+    }
+    if(status==='failed'&&run?.conclusion==='cancelled')[title,detail,tone]=['同步已取消','任务已停止。','waiting'];
+  }
+  if(view?.error&&syncFailureCopy[view.error])detail=syncFailureCopy[view.error];
+  const retryAfter=syncCount(view?.retry_after);
+  if(status==='cooldown'&&retryAfter)detail=`${retryAfter} 秒后可以重新发起同步。`;
+  if(status==='in_progress'&&stage?.label)detail=stage.label;
+  return {status,active,title,detail,tone,run,progress,publication,demo,stage};
+}
+
+function syncBar(value,total,label,indeterminate=false){
+  const percent=total>0?Math.round(Math.min(value,total)/total*100):0;
+  const range=indeterminate?'':` aria-valuenow="${value}" aria-valuemin="0" aria-valuemax="${total}"`;
+  return `<div class="sync-meter${indeterminate?' is-indeterminate':''}" role="progressbar" aria-label="${esc(label)}"${range}><i style="--sync-fill:${percent}%"></i></div>`;
+}
+
+function syncRunContent(view,snapshot,{dialog=false}={}){
+  const {status,active,title,detail,tone,run,progress,publication,demo,stage}=syncPresentation(view,snapshot);
+  const attempted=syncCount(demo?.attempted_this_run),deferred=syncCount(demo?.deferred_this_run),selected=syncCount(demo?.selected_this_run);
+  const completed=syncCount(demo?.completed_this_run),settled=attempted===null?null:attempted+(deferred||0);
+  const shards=syncCount(publication?.staged_count),totalShards=syncCount(publication?.total_shards);
+  let meter='';
+  if(status==='publishing'&&shards!==null&&totalShards&&shards<=totalShards){
+    meter=`<div class="sync-meter-readout"><span>已准备统计与回放分片</span><strong>${shards} / ${totalShards}</strong></div>${syncBar(shards,totalShards,'已准备的分片')}`;
+  }else if(status!=='publishing'&&settled!==null&&selected&&settled<=selected){
+    meter=`<div class="sync-meter-readout"><span>队列处理进度</span><strong>${settled} / ${selected}</strong></div>${syncBar(settled,selected,'本轮已处理或推迟的任务')}`;
+  }else if(active){
+    meter=syncBar(null,null,stage?.label||'等待同步进度',true);
+  }
+  const stats=[['已尝试',attempted],['已解析',completed],['推迟到下轮',deferred||null]].filter(([,value])=>value!==null);
+  const counters=stats.length?`<dl class="sync-run-counts">${stats.map(([label,value])=>`<div><dt>${label}</dt><dd>${format(value)}</dd></div>`).join('')}</dl>`:'';
+  const queueCounts=[['已排队','pending'],['待重试','retry'],['待录像','unavailable'],['登录受阻','blocked_auth']]
+    .map(([label,key])=>({label,key,value:syncCount(progress?.demo?.status_counts?.[key])}))
+    .filter(({value})=>value!==null);
+  const showQueue=queueCounts.length>0&&(dialog||queueCounts.some(({key,value})=>value!==syncCount(snapshot?.status_counts?.[key])));
+  const queue=showQueue?`<div class="sync-run-queue"><span>任务队列${demo?.last_run_at?` · ${syncTime(demo.last_run_at)}`:''}</span><dl class="sync-run-counts">${queueCounts.map(({label,value})=>`<div><dt>${label}</dt><dd>${format(value)}</dd></div>`).join('')}</dl></div>`:'';
+  const steps=Array.isArray(progress?.steps)?progress.steps.slice(0,12):[];
+  const timeline=steps.length?`<ol class="sync-stage-list" aria-label="同步阶段">${steps.map(step=>{
+    const status=Object.hasOwn(syncStepLabels,step.state)?step.state:'queued';
+    const ended=status==='completed'||status==='failed';
+    const timestamp=ended?step.completed_at:step.started_at;
+    return `<li data-step-state="${status}"${status==='in_progress'?' aria-current="step"':''}><span class="sync-stage-dot" aria-hidden="true"></span><span class="sync-stage-copy"><strong>${esc(step.label)}</strong><small>${syncStepLabels[status]}${timestamp?` · ${syncTime(timestamp)}`:''}</small></span></li>`;
+  }).join('')}</ol>`:'';
+  const runURL=/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/[1-9]\d{0,15}$/.test(run?.url||'')?run.url:null;
+  const foot=dialog&&runURL?`<a class="sync-run-link" href="${esc(runURL)}" target="_blank" rel="noopener noreferrer">查看 GitHub Actions 运行</a>`:'';
+  const time=run?.created_at?`<span>创建 ${syncTime(run.created_at)}</span>`:demo?.last_run_at?`<span>上次记录 ${syncTime(demo.last_run_at)}</span>`:'';
+  const publicationLabel=publication?.status==='updated'?'网站数据已更新':publication?.status==='unchanged'?'网站数据已是最新':'';
+  const stale=view?.progress_stale||view?.read_error?'同步状态暂未更新':'';
+  return `<div class="sync-run" data-sync-tone="${tone}" data-run-active="${active}">
+    <div class="sync-run-head"><span class="sync-run-icon" aria-hidden="true"></span><div><${dialog?'h3':'h2'}>${esc(title)}</${dialog?'h3':'h2'}><p>${esc(detail)}</p></div><div class="sync-run-time">${time}${publicationLabel?`<span>${publicationLabel}</span>`:''}${stale?`<span class="sync-stale">${stale}</span>`:''}</div></div>
+    ${meter?`<div class="sync-meter-block">${meter}</div>`:''}${counters}${queue}${timeline}${foot}
+  </div>`;
+}
+
+function describeSyncJob(job,now=Date.now()){
+  const status=job.status,error=job.last_error_code,next=Date.parse(job.next_attempt_at||'');
+  const retryScheduled=Number.isFinite(next),waiting=retryScheduled&&next>now;
+  let [label,tone]=Object.hasOwn(jobStatus,status)?jobStatus[status]:['状态待确认','muted'];
+  let detail=Object.hasOwn(errorLabels,error)?errorLabels[error]:'';
+  if(status==='retry')label=waiting?'等待重试':retryScheduled?'可在下轮重试':'待重试';
+  if(status==='unavailable'&&retryScheduled)label=waiting?'等待录像':'下轮重新检查';
+  if(status==='pending'&&!detail)detail='等待下次同步调度';
+  if(status==='retry'&&error==='steam_playing_elsewhere')label='Steam 会话暂缓';
+  if(status==='blocked_auth'&&!detail)detail='检查 Steam 登录后再同步';
+  if(!detail&&error)detail=/^[a-z0-9_]{1,64}$/.test(error)?`同步诊断：${error}`:'暂未提供诊断';
+  return {label,tone,detail:detail||'—'};
+}
+
+function syncQueueCard(sync){
+  const jobs=Array.isArray(sync.unfinished_jobs)?sync.unfinished_jobs:[];
+  const rows=jobs.map(job=>{
+    const {label,tone,detail}=describeSyncJob(job);
+    return `<tr><td class="mono">${esc(String(job.job_id||job.id||'').slice(0,10))}</td><td>${tag(label,tone)}</td><td>${esc(detail)}</td><td>${syncTime(job.last_attempt_at)}</td><td>${syncTime(job.next_attempt_at)}</td></tr>`;
+  }).join('');
+  const body=rows||`<tr><td colspan="5" class="table-empty">${sync.last_run_at?'当前数据未记录未完成任务':'暂无已保存的队列记录'}</td></tr>`;
+  return `<article class="card no-padding margin-bottom sync-queue"><div class="card-header">${sectionTitle('处理队列',sync.last_run_at?`<span class="sync-queue-time">队列记录 ${syncTime(sync.last_run_at)}</span>`:'')}</div><div class="table-scroll"><table class="data-table"><thead><tr><th scope="col">任务</th><th scope="col">状态</th><th scope="col">最近结果</th><th scope="col">上次尝试</th><th scope="col">下次重试</th></tr></thead><tbody>${body}</tbody></table></div></article>`;
+}
+
+function showSyncProgress(view,{open=false}={}){
+  syncProgressView=view;
+  const {tone,title,stage}=syncPresentation(view);
+  const note=$('#sync-live-note'),message=$('#sync-live-message');
+  if(note&&message){
+    const visible=Boolean(view&&view.source!=='background'&&view.status!=='idle');
+    note.hidden=!visible;
+    note.dataset.syncTone=tone;
+    const text=visible?(stage?.label&&view.status==='in_progress'?`${title} · ${stage.label}`:title):'';
+    if(message.textContent!==text)message.textContent=text;
+  }
+  const panel=$('#source-sync-status');
+  if(panel)panel.innerHTML=syncRunContent(view,state.data?.sync);
+  const announcer=$('#source-sync-announce');
+  if(announcer){
+    const text=view?.source==='background'?(stage?.label?`${title} · ${stage.label}`:title):'';
+    if(announcer.textContent!==text)announcer.textContent=text;
+  }
+  const receipt=$('#sync-receipt');
+  if(receipt&&(receipt.open||open)){
+    const body=$('#sync-receipt-body'),focused=body?.contains(document.activeElement)&&document.activeElement?.matches('.sync-run-link');
+    if(body)body.innerHTML=syncRunContent(view,state.data?.sync,{dialog:true});
+    if(open&&!receipt.open)receipt.showModal();
+    else if(focused)$('.sync-run-link',body)?.focus({preventScroll:true});
+  }
+}
+
+function sourcesView(includeStatistics=true){
+  const sync=state.data.sync||{},counts=sync.status_counts||{};
+  const statusPanel=`<section class="sync-center" aria-label="同步运行状态"><span id="source-sync-announce" class="sr-only" role="status"></span><div id="source-sync-status">${syncRunContent(syncProgressView,sync)}</div></section>`;
+  const queue=syncQueueCard(sync);
+  if(!includeStatistics)return statusPanel+queue+statisticsState(statisticsScopeMatches());
+  const d={...state.data,matches:state.data.matches.map(statisticsOverlay)},selected=currentMatch()||d.matches[0],replayGames=d.matches.filter(match=>match.replay?.rounds?.length).length,mechanicsGames=d.matches.filter(match=>match.rounds.some(round=>round.analysis?.level3?.mechanics)).length;
+  return `${statusPanel}<div class="data-health-strip"><span>网站快照 <strong>${esc(date(d.generated_at,true))}</strong></span><span>回放 <strong>${replayGames} / ${d.matches.length} 场</strong></span><span>枪法分析 <strong>${mechanicsGames} / ${d.matches.length} 场</strong></span></div><div class="metric-grid five">${[['complete','已解析','mint'],['pending','已排队','blue'],['retry','待重试','orange'],['unavailable','待录像','dim'],['blocked_auth','登录受阻','red']].map(([key,label,tone])=>metricTile(label,format(counts[key]),'','',null,tone)).join('')}</div>
+  ${queue}
   <article class="card no-padding margin-bottom"><div class="card-header">${sectionTitle('数据覆盖',`<span class="micro-label">${d.matches.length} MATCHES</span>`)}</div><div class="table-scroll"><table class="data-table"><thead><tr><th>比赛</th><th>时间</th><th class="number">回合</th><th>分析版本</th><th>全员回放</th><th>目标 / 停步 / 连射</th></tr></thead><tbody>${d.matches.map(match=>{const mechanics=collectMechanics(match.rounds.map(round=>({match,round})));return `<tr><td class="primary-cell">${esc(mapName(match.map_name))}</td><td>${esc(matchTime(match))}</td><td class="number">${match.rounds.length}</td><td class="mono">${esc(match.analysis_version||match.analysis?.version||'—')}</td><td>${match.replay?.rounds?.length?tag(`${format(match.replay.sample_hz)} Hz`,'teal'):tag('未采集')}</td><td class="mono">${mechanics.coverage.captured_rounds?`${mechanics.targeting.observed_bursts} / ${mechanics.stopping.eligible_opportunities} / ${mechanics.spray.bursts}`:'未采集'}</td></tr>`;}).join('')}</tbody></table></div></article>
-  <article class="card no-padding margin-bottom"><div class="card-header">${sectionTitle('处理队列',`<span class="micro-label">${jobs.length} TASKS</span>`)}</div><div class="table-scroll"><table class="data-table"><thead><tr><th>任务</th><th>状态</th><th>最近结果</th><th>最近尝试</th><th>下次重试</th></tr></thead><tbody>${jobs.length?jobs.map(job=>{const [label,tone]=jobStatus[job.status]||[job.status,'muted'];return `<tr><td class="mono">${esc((job.job_id||job.id||'').slice(0,10))}</td><td>${tag(label,tone)}</td><td>${esc(errorLabels[job.last_error_code]||job.last_error_code||'排队中')}</td><td>${job.last_attempt_at?esc(date(job.last_attempt_at)):'—'}</td><td>${job.next_attempt_at?esc(date(job.next_attempt_at)):'—'}</td></tr>`;}).join(''):'<tr><td colspan="5" class="table-empty">队列已处理完成</td></tr>'}</tbody></table></div></article>
   <div class="analytics-grid two"><article class="card methods-card">${sectionTitle('统计方法')}<dl class="method-list"><dt>ADR</dt><dd>敌方有效 HP 伤害 ÷ 回合数</dd><dt>KAST</dt><dd>击杀 / 助攻 / 存活 / 被补枪任一成立的回合占比</dd><dt>爆头率</dt><dd>爆头击杀 ÷ 总击杀</dd><dt>首发水平角差</dt><dd>伤害关联目标与准星朝向的 XY 夹角</dd><dt>首发水平对齐</dt><dd>首发角差 ≤2° 的有效伤害关联窗口占比</dd><dt>一次 / 二次修正</dt><dd>开枪前 / 后目标相对角差的变化</dd><dt>停步到位率</dt><dd>已观测前序地面移动的首发机会中，连续两帧 ≤10 units/s 的比例</dd><dt>伤害关联率</dt><dd>被同武器敌方伤害事件关联的独立开枪数 ÷ 观测开枪数</dd><dt>视角反向修正</dt><dd>视角俯仰与后坐力角变化反向的区间占比</dd><dt>可见性模型</dt><dd>未提供</dd></dl></article><article class="card">${sectionTitle('源记录',selected?`<span class="micro-label">${esc(mapName(selected.map_name))}</span>`:'')}${selected?provenance(selected):chartEmpty()}</article></div>`;
 }
 
@@ -969,13 +1159,7 @@ $('#side-filter').addEventListener('change',event=>{state.side=event.target.valu
 $('#date-filter').addEventListener('change',event=>{state.since=event.target.value;state.targetIndex=state.stopIndex=state.sprayIndex=state.aimIndex=state.aimPoint=0;state.aimReference='auto';stopPlayback();cancelReplayDecode();state.selectedKillId=null;state.roundNumber=null;state.positionIndex=0;render();});
 $('#reset-filters').addEventListener('click',resetFilters);$('#retry-button').addEventListener('click',loadData);$('#export-button').addEventListener('click',()=>exportData('csv'));$('#export-json').addEventListener('click',()=>exportData('json'));
 window.addEventListener('hashchange',()=>navigate(location.hash.slice(1)||'overview'));
-document.addEventListener('visibilitychange',()=>{if(document.hidden){stopPlayback();const button=$('#play-path');if(button){button.textContent='▶';button.setAttribute('aria-label','播放位置采样');}}});
-syncController=mountSync({button:$('#refresh-button'),resultButton:$('#sync-result-button'),reload:loadData,notice:showNotice,showReceipt(receipt,{open=false}={}){
-  const details=$('#sync-receipt');details.hidden=!receipt;if(!receipt)return;
-  $('#sync-receipt-status').textContent=receipt.status_label;
-  const link=$('#sync-receipt-link');link.hidden=!receipt.url;if(receipt.url)link.href=receipt.url;else link.removeAttribute('href');
-  const id=$('#sync-receipt-id');id.textContent=receipt.request_id||'';id.parentElement.hidden=!receipt.request_id;
-  if(open){details.open=true;details.querySelector('summary').focus({preventScroll:true});}
-}});
+document.addEventListener('visibilitychange',()=>{watchSyncProgress();if(document.hidden){stopPlayback();const button=$('#play-path');if(button){button.textContent='▶';button.setAttribute('aria-label','播放位置采样');}}});
+syncController=mountSync({button:$('#refresh-button'),resultButton:$('#sync-result-button'),reload:loadData,showProgress:showSyncProgress});
 navigate(location.hash.slice(1)||'overview');
 loadData();

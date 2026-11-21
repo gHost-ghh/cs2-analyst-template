@@ -44,11 +44,21 @@
           CS2 Metrics
         </a>
         <span>/</span> <strong id="breadcrumb-view">表现总览</strong>
-      </div><div class="topbar-actions"><span class="privacy-badge">PRIVATE WORKSPACE</span><div class="sync-actions"><button id="refresh-button" class="button button-quiet" type="button"><span aria-hidden="true">↻</span> 同步 Demo</button><button id="sync-result-button" class="text-button" type="button" aria-controls="sync-receipt" hidden>查看本次同步结果</button></div></div></header>
+      </div><div class="topbar-actions">
+        <span class="privacy-badge">PRIVATE WORKSPACE</span>
+        <div class="sync-actions">
+          <button id="refresh-button" class="button sync-trigger" type="button" data-sync-state="idle"><span class="sync-trigger-icon" data-sync-icon aria-hidden="true"></span><span data-sync-label>同步 Demo</span></button>
+          <button id="sync-result-button" class="text-button sync-inspect" type="button" aria-controls="sync-receipt" aria-haspopup="dialog" hidden>同步详情</button>
+        </div>
+      </div></header>
       <main id="main" tabindex="-1">
         <div class="page-heading"><div><div class="page-kicker" id="page-kicker">PERFORMANCE OVERVIEW</div><h1 id="page-title">表现总览</h1><p id="page-subtitle">对局表现与回合贡献</p></div><div class="updated-at"><span class="live-dot"></span><span id="updated-label">正在读取数据</span></div></div>
         <div id="notice" class="notice" role="status" hidden></div>
-        <details id="sync-receipt" class="sync-receipt" hidden><summary>本次同步详情</summary><p id="sync-receipt-status"></p><a id="sync-receipt-link" target="_blank" rel="noopener noreferrer" hidden>在 GitHub Actions 查看任务</a><p class="sync-receipt-id" hidden>请求编号 <code id="sync-receipt-id"></code></p></details>
+        <div id="sync-live-note" class="sync-live-note" hidden><i class="sync-state-dot" aria-hidden="true"></i><span role="status" id="sync-live-message"></span></div>
+        <dialog id="sync-receipt" class="sync-receipt" aria-labelledby="sync-receipt-title">
+          <header class="sync-dialog-head"><h2 id="sync-receipt-title">同步详情</h2><form method="dialog"><button class="button button-quiet" autofocus>关闭</button></form></header>
+          <div id="sync-receipt-body"></div>
+        </dialog>
         <section class="filter-bar" aria-label="数据筛选">
           <div class="filter-group"><span class="filter-caption">分析范围</span><label><span class="sr-only">地图</span><select id="map-filter"><option value="all">全部地图</option></select></label><label><span class="sr-only">阵营</span><select id="side-filter"><option value="all">全部阵营</option><option value="CT">CT 防守方</option><option value="T">T 进攻方</option></select></label><label class="date-label"><span>起始日期</span><input id="date-filter" type="date" aria-label="筛选比赛起始日期"></label></div>
           <div class="filter-actions"><button id="reset-filters" class="text-button" type="button">重置</button><span class="filter-divider"></span><button id="export-button" class="button button-quiet" type="button">↓ 导出 CSV</button><button id="export-json" class="icon-button" aria-label="下载当前筛选 JSON" title="下载当前筛选 JSON" type="button">{ }</button></div>

@@ -306,18 +306,26 @@ def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = 
     attempted_this_run = 0
     deferred_jobs = set()
     discovery_deferred = steam_session_in_use(discovery)
+    run_id = os.getenv("GITHUB_RUN_ID", "")
+    run_attempt = os.getenv("GITHUB_RUN_ATTEMPT", "")
+    github_run = (os.getenv("GITHUB_ACTIONS") == "true"
+                  and re.fullmatch(r"[1-9][0-9]{0,15}", run_id)
+                  and re.fullmatch(r"[1-9][0-9]{0,5}", run_attempt))
 
     def record_run_status(outcome, **result):
         status = {
             "last_run_at": now_utc().isoformat(), "attempted_this_run": attempted_this_run,
             "completed_this_run": completed_this_run, "run_outcome": outcome,
-            "deferred_this_run": len(deferred_jobs),
+            "deferred_this_run": len(deferred_jobs), "selected_this_run": len(selected),
             "native_sources_verified_this_run": native_sources_verified_this_run,
             "gc_discovery_status": discovery["status"] if discovery else "not_checked",
             "steam_session_configured": token_available, **result,
         }
-        if discovery_deferred:
-            status["gc_discovery_error_code"] = STEAM_PLAYING_ELSEWHERE
+        if github_run:
+            status.update(workflow_run_id=run_id, workflow_run_attempt=int(run_attempt))
+        discovery_error = (discovery or {}).get("error_code")
+        if isinstance(discovery_error, str) and re.fullmatch(r"[a-z0-9_]{1,64}", discovery_error, re.I):
+            status["gc_discovery_error_code"] = discovery_error.lower()
         write_json_if_changed(reports / "demo_status.json", status)
 
     def checkpoint_progress():
@@ -327,9 +335,9 @@ def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = 
         # Keep the raw result and queue durable even when report export fails.
         ready = False
         try:
-            record_run_status("partial")
             from .report import generate_reports
-            generate_reports(data, reports, steamid)
+            checkpoint = generate_reports(data, reports, steamid)
+            record_run_status("partial", status_counts=checkpoint["status_counts"], matches_analyzed=checkpoint["matches_analyzed"])
             ready = True
         except Exception:
             print("Demo checkpoint: report_generation_failed; preserving parsed data", flush=True)
