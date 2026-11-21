@@ -93,7 +93,13 @@ jobs:
           python -m cs2demo.pipeline "${args[@]}"
       - name: Add Demo worker report to run summary
         if: ${{ always() && !cancelled() }}
+        env:
+          DEMOS_OUTCOME: ${{ steps.demos.outcome }}
         run: |
+          if [ "$DEMOS_OUTCOME" = "success" ] && [ -f reports/demo_status.json ] &&
+             jq -e '.run_outcome == "deferred_steam_playing_elsewhere"' reports/demo_status.json >/dev/null; then
+            printf 'Steam 正在进行游戏。需要 Steam GC 的任务已推迟，保留到后续同步。\n\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f reports/demo_latest.md ]; then cat reports/demo_latest.md >> "$GITHUB_STEP_SUMMARY"; fi
       - name: Commit generated data only when changed
         id: commit

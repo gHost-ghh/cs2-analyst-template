@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from cs2demo.download import MAGIC
 from cs2demo.advanced import ANALYSIS_VERSION
-from cs2demo.pipeline import enqueue, ensure_account, load_state, run_pipeline, due, mark_failure, parse_bounded, discover_recent_codes
+from cs2demo.pipeline import enqueue, ensure_account, load_state, run_pipeline, due, mark_failure, parse_bounded, discover_recent_codes, main
 from cs2demo.download import DownloadError
 
 SID = '76561198096123254'
@@ -260,6 +260,82 @@ class PipelineTests(unittest.TestCase):
              patch('cs2demo.pipeline.discover_recent_codes',return_value={'status':'expired','error_code':'steam_refresh_token_expired'}):
             result=run_pipeline(Path(tmp),SID)
             self.assertEqual(result['run_outcome'],'blocked_auth')
+
+    def test_steam_busy_defers_without_spending_a_download_attempt_and_retries_on_next_run(self):
+        busy = {'status': 'transient', 'error_code': 'STEAM_PLAYING_ELSEWHERE'}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'STEAM_REFRESH_TOKEN': 'fake'}, clear=True):
+            root = Path(tmp)
+            ensure_account(root / 'data', SID)
+            state = load_state(root / 'data', SID)
+            job = enqueue(state, CODE)
+            job.update(status='retry', attempts=12, last_error_code='steam_playing_elsewhere',
+                       last_attempt_at='2025-01-01T02:00:00Z', next_attempt_at='2099-01-01T00:00:00Z',
+                       match_started_at='2025-01-01T00:00:00Z', timestamp_provenance='Steam GC matchList.matchtime',
+                       replay_url_diagnostics=[{'host': 'replay1.valve.net', 'scheme': 'http:', 'reason': 'ACCEPTED'}])
+            queue = root / 'data/demo_jobs.json'
+            queue.write_text(json.dumps(state))
+            with patch('cs2demo.pipeline.discover_recent_codes', return_value=busy), \
+                 patch('cs2demo.pipeline.resolve_codes', return_value={CODE: busy}) as resolve, \
+                 patch('cs2demo.pipeline.download_demo') as download, \
+                 patch('sys.argv', ['pipeline', '--root', tmp, '--steamid', SID]):
+                self.assertEqual(main(), 0)
+            self.assertEqual([item['id'] for item in resolve.call_args.args[0]], [job['id']])
+            download.assert_not_called()
+            self.assertEqual(json.loads(queue.read_text()), state)
+            status = json.loads((root / 'reports/demo_status.json').read_text())
+            self.assertEqual(status['run_outcome'], 'deferred_steam_playing_elsewhere')
+            self.assertEqual(status['gc_discovery_error_code'], 'steam_playing_elsewhere')
+            self.assertEqual(status['attempted_this_run'], 0)
+            self.assertEqual(status['deferred_this_run'], 1)
+            from cs2demo.shards import load_dashboard
+            sync = load_dashboard(root / 'reports')['sync']
+            self.assertEqual(sync['run_outcome'], 'deferred_steam_playing_elsewhere')
+            self.assertEqual(sync['deferred_this_run'], 1)
+
+            def download_replay(url, directory, **kwargs):
+                path = directory / 'replay.dem'
+                path.write_bytes(MAGIC + b'fixture')
+                return path, {'sha256': 'fixture'}
+
+            resolved = {'status': 'resolved', 'url': 'https://replay1.valve.net/730/a.dem'}
+            with patch('cs2demo.pipeline.resolve_codes', return_value={CODE: resolved}), \
+                 patch('cs2demo.pipeline.download_demo', side_effect=download_replay):
+                result = run_pipeline(root, SID, parser=fake_parse)
+            self.assertEqual(result['run_outcome'], 'ok')
+            self.assertEqual(result['deferred_this_run'], 0)
+            saved = json.loads(queue.read_text())['jobs'][job['id']]
+            self.assertEqual(saved['status'], 'complete')
+            self.assertEqual(saved['attempts'], 13)
+
+    def test_discovery_alone_can_be_deferred(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'STEAM_REFRESH_TOKEN': 'fake'}, clear=True), \
+             patch('cs2demo.pipeline.discover_recent_codes', return_value={
+                 'status': 'transient', 'error_code': 'steam_playing_elsewhere'}):
+            result = run_pipeline(Path(tmp), SID)
+            self.assertEqual(result['run_outcome'], 'deferred_steam_playing_elsewhere')
+            self.assertEqual(result['deferred_this_run'], 0)
+
+    def test_deferred_resolution_does_not_hide_an_independent_parser_error(self):
+        other_code = 'CSGO-GADqf-jjyJ8-cSP2r-smZRo-TO2xK'
+        answers = {
+            CODE: {'status': 'transient', 'error_code': 'STEAM_PLAYING_ELSEWHERE'},
+            other_code: {'status': 'resolved', 'url': 'https://replay1.valve.net/730/a.dem'},
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'STEAM_REFRESH_TOKEN': 'fake'}, clear=True):
+            root = Path(tmp)
+            ensure_account(root / 'data', SID)
+            (root / 'data/official_codes.json').write_text(json.dumps({'codes': [CODE, other_code]}))
+            with patch('cs2demo.pipeline.resolve_codes', return_value=answers), \
+                 patch('cs2demo.pipeline.download_demo', return_value=(root / 'unused.dem', {'sha256': 'fixture'})), \
+                 patch('cs2demo.pipeline.parse_bounded', side_effect=DownloadError('parser_timeout')):
+                result = run_pipeline(root, SID, limit=2)
+            self.assertEqual(result['run_outcome'], 'failed')
+            self.assertEqual(result['deferred_this_run'], 1)
+            jobs = json.loads((root / 'data/demo_jobs.json').read_text())['jobs'].values()
+            by_code = {job['share_code']: job for job in jobs}
+            self.assertEqual(by_code[CODE]['attempts'], 0)
+            self.assertEqual(by_code[CODE]['status'], 'pending')
+            self.assertEqual(by_code[other_code]['last_error_code'], 'parser_timeout')
 
     def test_forced_bootstrap_prioritizes_newest_gc_match_over_old_unattempted_jobs(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ,{'STEAM_REFRESH_TOKEN':'fake'},clear=True):

@@ -7,7 +7,7 @@
 | 初始 workflow 没有自动运行 | 模板默认未启用调度；先完成本人配置、Secrets、首次手动验收，再按工作流说明启用 |
 | `blocked_auth`、GC 登录失败 | 检查当前私有仓库 `STEAM_REFRESH_TOKEN` 是否存在、是否属于 `STEAMID64`；过期后在本人终端重新扫码并安全更新 Secret，手动 retry；不打印令牌 |
 | Steam 扫码脚本拒绝输出路径 | 文件已存在时不会覆盖；使用新的私有路径或在确认无用后由本人删除旧文件 |
-| Steam 其他设备游戏会话冲突 | 等本人游戏结束再试，不关闭其游戏，不抢占会话 |
+| `deferred_steam_playing_elsewhere` | Steam 正在进行游戏。需要 GC 的任务留在队列，Actions 摘要会注明推迟原因，下一次同步可重试 |
 | 没发现旧比赛 | GC 窗口有限；核对分享代码 API 三项配置、官方历史和原始下载有效性，不承诺恢复全部历史 |
 | `unavailable` / HTTP 404 | 链接暂不可用或过期，保留队列和退避记录；不把任务改成成功、不高频无限重试 |
 | 新版 Demo 下载成功但解析事件失败 | 检查 `.github/workflows/sync.yml` 是否安装了当前 `requirements-demo.txt`。`demoparser2` 0.42.2 支持 CS2 build 14197 引入的 `fixed8` 编码。更新后重试原任务，保留已有成功分析 |

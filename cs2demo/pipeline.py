@@ -18,6 +18,7 @@ from .native_sources import (MANIFEST_NAME, NativeSourceError, fingerprint,
                              has_native_source, load_native_sources, record_native_source)
 
 ROOT = Path(__file__).resolve().parents[1]
+STEAM_PLAYING_ELSEWHERE = "steam_playing_elsewhere"
 
 
 def write_json_if_changed(path: Path, value):
@@ -118,6 +119,9 @@ def load_state(data: Path, steamid: str) -> dict:
 def due(job: dict, now: datetime, force=False) -> bool:
     if job["status"] == "complete":
         return False
+    # Older workers applied a download backoff when Steam never allowed a request.
+    if job["status"] == "retry" and job.get("last_error_code") == STEAM_PLAYING_ELSEWHERE:
+        return True
     if force or not job.get("next_attempt_at"):
         return True
     return datetime.fromisoformat(job["next_attempt_at"]) <= now
@@ -202,6 +206,11 @@ def discover_recent_codes(data: Path, state: dict) -> dict:
         metadata["error_code"] = error
     write_json_if_changed(data / "gc_discovery.json", metadata)
     return metadata
+
+
+def steam_session_in_use(result: dict | None) -> bool:
+    return (bool(result) and result.get("status") == "transient"
+            and str(result.get("error_code", "")).lower() == STEAM_PLAYING_ELSEWHERE)
 
 
 def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = None,
@@ -295,6 +304,21 @@ def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = 
     completed_this_run = 0
     native_sources_verified_this_run = 0
     attempted_this_run = 0
+    deferred_jobs = set()
+    discovery_deferred = steam_session_in_use(discovery)
+
+    def record_run_status(outcome, **result):
+        status = {
+            "last_run_at": now_utc().isoformat(), "attempted_this_run": attempted_this_run,
+            "completed_this_run": completed_this_run, "run_outcome": outcome,
+            "deferred_this_run": len(deferred_jobs),
+            "native_sources_verified_this_run": native_sources_verified_this_run,
+            "gc_discovery_status": discovery["status"] if discovery else "not_checked",
+            "steam_session_configured": token_available, **result,
+        }
+        if discovery_deferred:
+            status["gc_discovery_error_code"] = STEAM_PLAYING_ELSEWHERE
+        write_json_if_changed(reports / "demo_status.json", status)
 
     def checkpoint_progress():
         if checkpoint_publisher is None:
@@ -303,13 +327,7 @@ def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = 
         # Keep the raw result and queue durable even when report export fails.
         ready = False
         try:
-            write_json_if_changed(reports / "demo_status.json", {
-                "last_run_at": now_utc().isoformat(), "attempted_this_run": attempted_this_run,
-                "completed_this_run": completed_this_run, "run_outcome": "partial",
-                "native_sources_verified_this_run": native_sources_verified_this_run,
-                "gc_discovery_status": discovery["status"] if discovery else "not_checked",
-                "steam_session_configured": token_available,
-            })
+            record_run_status("partial")
             from .report import generate_reports
             generate_reports(data, reports, steamid)
             ready = True
@@ -327,6 +345,13 @@ def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = 
         temp_dir = Path(temp)
         resolved = resolve_codes(resolve_jobs, temp_dir)
         for job in selected:
+            job_url = url if job is override else None
+            using_local_demo = job is override and local_demo is not None
+            answer = resolved.get(job.get("share_code"), {})
+            if not (job_url or using_local_demo) and steam_session_in_use(answer):
+                deferred_jobs.add(job["id"])
+                print(f"Demo job {job['id']}: deferred ({STEAM_PLAYING_ELSEWHERE})", flush=True)
+                continue
             print(f"Demo job {job['id']}: starting", flush=True)
             attempted_this_run += 1
             job["attempts"] += 1
@@ -347,8 +372,7 @@ def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = 
                 job.pop("failure_details", None)
                 job.pop("download_receipt", None)
             save()
-            job_url = url if job is override else None
-            if not job_url and not (job is override and local_demo):
+            if not (job_url or using_local_demo):
                 if not job.get("share_code"):
                     mark_failure(job, "manual_url_required", current, status="unavailable")
                     save()
@@ -359,7 +383,6 @@ def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = 
                     save()
                     checkpoint_progress()
                     continue
-                answer = resolved.get(job["share_code"], {})
                 diagnostics = answer.get("replay_url_diagnostics")
                 if isinstance(diagnostics, list):
                     # Diagnostics contain only sanitized host/scheme/reason, never URLs.
@@ -386,7 +409,7 @@ def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = 
             try:
                 with tempfile.TemporaryDirectory(dir=temp_dir) as item_tmp:
                     workdir = Path(item_tmp)
-                    if local_demo and job is override:
+                    if using_local_demo:
                         demo = workdir / "replay.dem"
                         receipt = materialize_demo(local_demo, demo)
                     else:
@@ -429,7 +452,7 @@ def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = 
                     write_json_if_changed(data / result_path, analysis)
                     job.update({"status": "complete", "result_path": result_path, "parsed_at": analysis["parsed_at"]})
                     job["analysis_version"] = analysis.get("analysis_version")
-                    if job_url and not (local_demo and job is override):
+                    if job_url and not using_local_demo:
                         try:
                             record_native_source(native_sources, job["id"], job_url, receipt,
                                                  analysis.get("provenance", {}))
@@ -470,27 +493,32 @@ def run_pipeline(root: Path, steamid: str, *, limit: int = 1, url: str | None = 
                 print("Demo checkpoint: publish_failed; local progress retained", flush=True)
         raise
     successful_this_run = completed_this_run + native_sources_verified_this_run
-    outcome = "idle" if not selected else "ok" if successful_this_run == len(selected) else "partial" if successful_this_run else "failed"
+    outcome = "idle" if not attempted_this_run else "ok" if successful_this_run == attempted_this_run else "partial" if successful_this_run else "failed"
     waiting_codes = {"replay_url_unavailable", "match_unavailable", "http_404"}
+
+    def waiting_for_replay(job):
+        return job["status"] == "unavailable" and job.get("last_error_code") in waiting_codes
+
     if not completed_this_run and state["jobs"] and all(
-            j["status"] == "complete" or (j["status"] == "unavailable" and j.get("last_error_code") in waiting_codes)
-            for j in state["jobs"].values()) and snapshot["status_counts"].get("unavailable"):
+            j["status"] == "complete" or waiting_for_replay(j) for j in state["jobs"].values()
+    ) and snapshot["status_counts"].get("unavailable"):
         outcome = "waiting_for_replays"
-    if discovery and discovery["status"] != "discovered":
+    if discovery and discovery["status"] != "discovered" and not discovery_deferred:
         outcome = "blocked_auth" if discovery["status"] == "expired" or discovery.get("error_code", "").startswith(
             ("steam_auth_", "steam_guard_", "steam_account_", "steam_refresh_token_")) else "failed"
+    elif discovery_deferred or deferred_jobs:
+        # A Steam safety pause should not hide a separate failure in an attempted job.
+        replay_waits = sum(job["id"] not in deferred_jobs and waiting_for_replay(job) for job in selected)
+        if attempted_this_run == successful_this_run + replay_waits:
+            outcome = "deferred_steam_playing_elsewhere"
+        else:
+            outcome = "partial" if successful_this_run else "failed"
     if snapshot["status_counts"].get("blocked_auth"):
         outcome = "blocked_auth"
     snapshot["run_outcome"] = outcome
+    snapshot["deferred_this_run"] = len(deferred_jobs)
     # Tracks worker execution, separate from individual Demo parse success.
-    write_json_if_changed(reports / "demo_status.json", {
-        "last_run_at": now_utc().isoformat(), "attempted_this_run": len(selected),
-        "completed_this_run": completed_this_run, "run_outcome": outcome,
-        "native_sources_verified_this_run": native_sources_verified_this_run,
-        "gc_discovery_status": discovery["status"] if discovery else "not_checked",
-        "steam_session_configured": token_available, "status_counts": snapshot["status_counts"],
-        "matches_analyzed": snapshot["matches_analyzed"],
-    })
+    record_run_status(outcome, status_counts=snapshot["status_counts"], matches_analyzed=snapshot["matches_analyzed"])
     from .dashboard import generate_dashboard
     try:
         generate_dashboard(data, reports, steamid)
@@ -539,7 +567,8 @@ def main():
                               backfill_native_sources=args.backfill_native_sources,
                               download_timeout_seconds=args.download_timeout,
                               checkpoint_publisher=publisher)
-        print(json.dumps({"matches_analyzed": result["matches_analyzed"], "status_counts": result["status_counts"]}))
+        print(json.dumps({"matches_analyzed": result["matches_analyzed"], "status_counts": result["status_counts"],
+                          "run_outcome": result["run_outcome"], "deferred_this_run": result["deferred_this_run"]}))
         status = result["status_counts"]
         # Missing setup is a visible blocked state, not a successful end-to-end run.
         if status.get("blocked_auth"):

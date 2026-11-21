@@ -37,7 +37,7 @@ PROVENANCE_FIELDS = (
     "timestamp_provenance", "download_host", "download_protocol",
     "replay_sampling", "recording_bounds",
 )
-RUN_OUTCOMES = {"idle", "ok", "partial", "failed", "blocked_auth", "waiting_for_replays"}
+RUN_OUTCOMES = {"idle", "ok", "partial", "failed", "blocked_auth", "waiting_for_replays", "deferred_steam_playing_elsewhere"}
 MAX_DETAIL_BYTES = 8 * 1024 * 1024
 
 
@@ -415,6 +415,9 @@ def generate_dashboard(data_dir: Path, reports_dir: Path, steamid: str, *, valid
         "player_directory": _clean(build_player_directory(exported_matches, str(steamid))),
         "training_plan": _training_plan(matches), "ai_coach": _ai_coach(),
     }
+    deferred = worker.get("deferred_this_run")
+    if type(deferred) is int and 0 <= deferred <= 20:
+        result["sync"]["deferred_this_run"] = deferred
     canonical = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     result["source"]["snapshot_sha256"] = hashlib.sha256(canonical.encode()).hexdigest()
     from .transport import export_dashboard_transport
