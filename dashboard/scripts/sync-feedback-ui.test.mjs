@@ -134,3 +134,14 @@ test('verified attempt receipts label known task-specific outcomes and earliest 
   assert.doesNotMatch(markup,/同步状态暂未更新/);
   assert.ok(markup.indexOf('本轮逐场结果')<markup.indexOf('同步阶段'));
 });
+
+test('an official origin object missing for a recent match is an actionable wait',()=>{
+  const record={job_id:'e'.repeat(24),job_index:1,status:'unavailable',error_code:'replay_origin_pending',retry_at:phase.started_at};
+  const result={status:'completed',run:{...run,run_attempt:1,status:'completed',conclusion:'success'},progress:{run_id:run.id,steps:[phase],
+    demo:{checkpoint_state:'final',run_outcome:'waiting_for_replays',completed_this_run:0,job_results:[record]}}};
+  const markup=syncRunContent(result,null,{dialog:true});
+  assert.match(markup,/等待源站录像/);
+  assert.match(markup,/1 场比赛已找到，录像源站尚未提供文件/);
+  assert.match(markup,/最早可重试/);
+  assert.equal(describeSyncJob({...record,last_error_code:record.error_code}).label,'等待源站录像');
+});

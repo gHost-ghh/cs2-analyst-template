@@ -914,6 +914,7 @@ const errorLabels={
   gc_url_unavailable:'Steam 尚未提供录像地址',
   match_unavailable:'Steam 暂未返回该场比赛',
   http_404:'录像服务器返回 HTTP 404',
+  replay_origin_pending:'Steam 已找到比赛，录像源站尚未提供文件',
   steam_playing_elsewhere:'Steam 正在使用游戏会话',
   steam_refresh_token_missing:'缺少 Steam 登录配置',
   steam_refresh_token_expired:'Steam 登录已过期',
@@ -1079,6 +1080,7 @@ function describeSyncJob(job,now=Date.now()){
   let detail=Object.hasOwn(errorLabels,error)?errorLabels[error]:'';
   if(status==='retry')label=waiting?'等待重试':retryScheduled?'可在下轮重试':'待重试';
   if(status==='unavailable'&&retryScheduled)label=waiting?'等待录像':'下轮重新检查';
+  if(status==='unavailable'&&error==='replay_origin_pending')label='等待源站录像';
   if(status==='pending'&&!detail)detail='等待下次同步调度';
   if(status==='retry'&&error==='steam_playing_elsewhere')label='Steam 会话暂缓';
   if(status==='blocked_auth'&&!detail)detail='检查 Steam 登录后再同步';

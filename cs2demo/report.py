@@ -28,6 +28,7 @@ ERROR_EXPLANATIONS = {
     "gc_url_unavailable": "GC 未返回这场比赛的下载链接；这不能证明 Demo 已过期，任务会保留并按计划重试。",
     "match_unavailable": "GC 暂未返回这场比赛；不能据此证明比赛不存在或 Demo 已过期。",
     "http_404": "下载服务器返回 HTTP 404，文件可能已过期、缺失或暂未提供；不能仅凭这次响应确定原因。",
+    "replay_origin_pending": "Steam 已返回最近比赛的官方录像地址，源站确认该文件不存在。任务会在到达最早重试时间后由后续同步重新检查。",
     "steam_refresh_token_missing": "尚未配置 Steam 登录令牌；比赛授权码和 Steam Web API Key 不能替代 GC 登录。",
     "steam_refresh_token_expired": "Steam 登录令牌已过期，需要在云端重新扫码并更新 Secret 后重试。",
     "steam_refresh_token_rejected": "Steam 登录令牌被拒绝或撤销，需要在云端重新扫码并更新 Secret 后重试。",

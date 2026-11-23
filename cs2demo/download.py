@@ -9,14 +9,17 @@ import math
 import re
 import time
 from email.utils import parsedate_to_datetime
-from http.client import IncompleteRead
+from http.client import HTTPException, IncompleteRead
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from xml.etree import ElementTree
 
 MAGIC = b"PBDEMS2\x00"
 REPLAY_HOST = re.compile(r"replay\d+\.(?:valve\.net|wmsj\.cn|csgo\.com\.cn)\Z", re.I)
+_REPLAY_PATH = re.compile(r"/730/[A-Za-z0-9_.-]+\.dem(?:\.bz2)?\Z")
+_ORIGIN_ERROR_LIMIT = 2048
 _CONNECTION_ERRORS = {"download_network_error", "download_socket_timeout", "download_connection_reset"}
 _RETRYABLE_ERRORS = _CONNECTION_ERRORS | {"truncated_download", "http_408", "http_500", "http_502", "http_503", "http_504"}
 
@@ -85,6 +88,44 @@ def _retry_after(value):
         return 0
 
 
+def _replay_url_fingerprint(url):
+    """Identify an ordinary official replay URL without retaining its path."""
+    try:
+        if not isinstance(url, str) or not re.fullmatch(r"[\x21-\x7e]{1,2048}", url):
+            return None
+        parts = urlsplit(url)
+        if (parts.scheme not in {"http", "https"} or not REPLAY_HOST.fullmatch(parts.hostname or "")
+                or not _REPLAY_PATH.fullmatch(parts.path) or parts.username is not None
+                or parts.password is not None or parts.port is not None or "?" in url or "#" in url):
+            return None
+    except ValueError:
+        return None
+    return hashlib.sha256(url.encode("ascii")).hexdigest()[:16]
+
+
+def _missing_origin_key(error):
+    """Recognize the official CDN's fixed missing-object response without storing its body."""
+    if error.code != 404 or error.headers is None or not _replay_url_fingerprint(error.geturl()):
+        return False
+    encoding = error.headers.get("Content-Encoding", "identity").lower()
+    length = error.headers.get("Content-Length", "")
+    if encoding != "identity" or not re.fullmatch(r"[1-9][0-9]{0,3}", length) or int(length) > _ORIGIN_ERROR_LIMIT:
+        return False
+    read_once = getattr(error.fp, "read1", None)
+    if not callable(read_once):
+        return False
+    try:
+        # Read at most one buffered chunk. An incomplete or unfamiliar body is
+        # a plain HTTP 404, and cannot affect the downloader's retry policy.
+        body = read_once(int(length))
+        if len(body) != int(length) or b"\x00" in body or b"<!" in body:
+            return False
+        root = ElementTree.fromstring(body)
+        return root.tag == "Error" and [code.text for code in root.findall("Code")] == ["NoSuchKey"]
+    except (HTTPException, LookupError, OSError, ValueError, ElementTree.ParseError):
+        return False
+
+
 def materialize_demo(source: Path, target: Path, *, max_bytes: int = 2 * 1024**3,
                      deadline: float | None = None, on_progress=None) -> dict:
     """Decompress without trusting extensions, and reject HTML/CS:GO/partial bz2 files."""
@@ -126,6 +167,7 @@ def _download_once(url: str, directory: Path, *, extra_hosts: tuple[str, ...] = 
                   max_compressed: int = 512 * 1024**2, max_bytes: int = 2 * 1024**3,
                   timeout_seconds: float = 900, on_progress=None, attempt: int = 1) -> tuple[Path, dict]:
     host = validate_url(url, extra_hosts)
+    url_fingerprint = _replay_url_fingerprint(url)
     directory.mkdir(parents=True, exist_ok=True)
     packed, target = directory / "replay.download", directory / "replay.dem"
     started = time.monotonic()
@@ -133,8 +175,11 @@ def _download_once(url: str, directory: Path, *, extra_hosts: tuple[str, ...] = 
     received, announced, stage = 0, 0, "connect"
 
     def details():
-        return {"host": host, "received_bytes": received, "announced_bytes": announced,
-                "elapsed_seconds": round(time.monotonic() - started, 1), "stage": stage}
+        result = {"host": host, "received_bytes": received, "announced_bytes": announced,
+                  "elapsed_seconds": round(time.monotonic() - started, 1), "stage": stage}
+        if url_fingerprint:
+            result["url_fingerprint"] = url_fingerprint
+        return result
 
     def download_progress():
         total = {"total_bytes": announced} if 0 < announced and received <= announced else {}
@@ -189,13 +234,22 @@ def _download_once(url: str, directory: Path, *, extra_hosts: tuple[str, ...] = 
         stage = "validate"
         receipt = materialize_demo(packed, target, max_bytes=max_bytes, deadline=deadline, on_progress=materialize_progress)
         receipt.update({"download_host": host, "compressed_bytes": received, "download_protocol": urlsplit(url).scheme})
+        if url_fingerprint:
+            receipt["url_fingerprint"] = url_fingerprint
         return target, receipt
     except HTTPError as exc:
         error_details = details()
-        retry_after = _retry_after(exc.headers.get("Retry-After")) if exc.headers is not None else 0
-        if retry_after:
-            error_details["retry_after_seconds"] = retry_after
-        exc.close()
+        try:
+            retry_after = _retry_after(exc.headers.get("Retry-After")) if exc.headers is not None else 0
+            if retry_after:
+                error_details["retry_after_seconds"] = retry_after
+            if url_fingerprint and _missing_origin_key(exc):
+                error_details["origin_code"] = "NoSuchKey"
+                origin = _replay_url_fingerprint(exc.geturl())
+                if origin != url_fingerprint:
+                    error_details["origin_url_fingerprint"] = origin
+        finally:
+            exc.close()
         raise DownloadError(f"http_{exc.code}", details=error_details) from None
     except IncompleteRead:
         raise DownloadError("truncated_download", details=details()) from None
@@ -214,7 +268,8 @@ def _attempt_record(attempt, url, elapsed, error=None):
     result = {"attempt": attempt, "protocol": urlsplit(url).scheme,
               "elapsed_seconds": round(elapsed, 1), "stage": "validate", "result": "ok"}
     if error is not None:
-        for key in ("stage", "received_bytes", "announced_bytes", "retry_after_seconds"):
+        for key in ("stage", "received_bytes", "announced_bytes", "retry_after_seconds",
+                    "url_fingerprint", "origin_code", "origin_url_fingerprint"):
             if key in error.details:
                 result[key] = error.details[key]
         result["result"] = error.code

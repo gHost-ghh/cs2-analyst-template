@@ -373,6 +373,55 @@ class PipelineTests(unittest.TestCase):
         mark_failure(job, 'http_503', current, retry_after_seconds=3000)
         self.assertEqual(job['next_attempt_at'], '2025-01-01T15:50:00+00:00')
 
+    def test_official_recent_origin_missing_is_reported_as_waiting_for_the_replay(self):
+        now = datetime.fromisoformat('2025-01-01T15:00:00+00:00')
+        examples = [
+            ('2025-01-01T13:00:00Z', 'NoSuchKey', 'replay_origin_pending'),
+            ('2025-01-01T13:00:00Z', None, 'http_404'),
+            ('2024-12-01T13:00:00Z', 'NoSuchKey', 'http_404'),
+        ]
+        for started, origin_code, expected in examples:
+            with self.subTest(started=started, origin_code=origin_code), tempfile.TemporaryDirectory() as tmp, \
+                 patch.dict(os.environ, {'STEAM_REFRESH_TOKEN': 'fixture'}, clear=True):
+                root = Path(tmp)
+                resolution = {'status': 'resolved', 'url': 'http://replay1.csgo.com.cn/730/a.dem.bz2',
+                              'match_started_at': started, 'match_time_verified': True}
+                with patch('cs2demo.pipeline.now_utc', return_value=now), \
+                     patch('cs2demo.pipeline.discover_recent_codes', return_value={'status':'discovered'}), \
+                     patch('cs2demo.pipeline.resolve_codes', return_value={CODE: resolution}), \
+                     patch('cs2demo.pipeline.download_demo', side_effect=DownloadError('http_404', details={'origin_code':origin_code})):
+                    result = run_pipeline(root, SID, code=CODE)
+                status = json.loads((root / 'reports/demo_status.json').read_text())
+                self.assertEqual(result['run_outcome'], 'waiting_for_replays')
+                self.assertEqual(status['completed_this_run'], 0)
+                self.assertEqual(status['job_results'][0]['error_code'], expected)
+                self.assertEqual(status['job_results'][0]['status'], 'unavailable')
+
+    def test_replay_becoming_due_during_discovery_is_selected_in_the_same_run(self):
+        current = datetime.fromisoformat('2025-01-01T15:00:00+00:00')
+
+        def discover(*_):
+            nonlocal current
+            current += timedelta(seconds=30)
+            return {'status': 'discovered'}
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'STEAM_REFRESH_TOKEN': 'fixture'}, clear=True):
+            root = Path(tmp)
+            ensure_account(root / 'data', SID)
+            queue = load_state(root / 'data', SID)
+            job = enqueue(queue, CODE)
+            job.update(status='unavailable', last_error_code='replay_origin_pending',
+                       next_attempt_at='2025-01-01T15:00:20+00:00')
+            (root / 'data/demo_jobs.json').write_text(json.dumps(queue), encoding='utf-8')
+            answer = {CODE:{'status':'unavailable','error_code':'REPLAY_URL_UNAVAILABLE'}}
+            with patch('cs2demo.pipeline.now_utc', side_effect=lambda: current), \
+                 patch('cs2demo.pipeline.discover_recent_codes', side_effect=discover), \
+                 patch('cs2demo.pipeline.resolve_codes', return_value=answer):
+                run_pipeline(root, SID)
+            recorded = json.loads((root/'reports/demo_status.json').read_text())
+            self.assertEqual(recorded['attempted_this_run'], 1)
+            self.assertEqual(recorded['job_results'][0]['job_id'], job['id'])
+
     def test_parser_exposes_observed_stage_without_inheriting_progress_token(self):
         observed = Event()
         stages = []

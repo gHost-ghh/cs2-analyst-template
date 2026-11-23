@@ -1,4 +1,6 @@
 import bz2
+import hashlib
+from io import BytesIO
 import tempfile
 import unittest
 from http.client import IncompleteRead
@@ -104,6 +106,63 @@ class DownloadTests(unittest.TestCase):
                     download_demo('http://replay237.csgo.com.cn/730/a.dem.bz2', Path(tmp))
                 fetch.assert_called_once()
 
+    def test_official_cdn_missing_object_records_only_code_and_exact_url_fingerprint(self):
+        official = 'http://replay237.csgo.com.cn/730/123_unique-replay-path.dem.bz2'
+        xml = b'<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Key>private-storage-key</Key></Error>'
+        with tempfile.TemporaryDirectory() as tmp, patch('cs2demo.download.build_opener') as factory:
+            opener = factory.return_value
+            opener.open.side_effect = HTTPError(official, 404, 'Missing object',
+                                                {'Content-Length': str(len(xml))}, BytesIO(xml))
+            with self.assertRaisesRegex(DownloadError, '^http_404$') as caught:
+                download_demo(official, Path(tmp))
+        details = caught.exception.details
+        self.assertEqual(details['url_fingerprint'], hashlib.sha256(official.encode()).hexdigest()[:16])
+        self.assertEqual(details['origin_code'], 'NoSuchKey')
+        self.assertEqual(details['attempts'][0]['origin_code'], 'NoSuchKey')
+        self.assertEqual(details['attempts'][0]['url_fingerprint'], details['url_fingerprint'])
+        self.assertNotIn('unique-replay-path', str(details))
+        self.assertNotIn('private-storage-key', str(details))
+        opener.open.assert_called_once()
+
+    def test_unknown_unbounded_or_non_official_404_does_not_claim_missing_origin_key(self):
+        official = 'http://replay237.csgo.com.cn/730/123_article.dem.bz2'
+        custom = 'https://files.example.org/730/123_article.dem.bz2?sig=credential'
+        xml = b'<Error><Code>NoSuchKey</Code></Error>'
+        evil_xml = b'<!DOCTYPE Error [<!ENTITY name "NoSuchKey">]><Error><Code>&name;</Code></Error>'
+        unknown_encoding = b'<?xml version="1.0" encoding="unknown-encoding"?><Error><Code>NoSuchKey</Code></Error>'
+        html = b'<html><Code>NoSuchKey</Code></html>'
+
+        class TrackedBody(BytesIO):
+            def __init__(self, content):
+                super().__init__(content)
+                self.requests = []
+
+            def read1(self, count):
+                self.requests.append(count)
+                return super().read1(count)
+
+        inputs = [
+            (official, xml, {}, False),
+            (official, xml, {'Content-Length': '2049'}, False),
+            (official, xml, {'Content-Length': str(len(xml)), 'Content-Encoding': 'gzip'}, False),
+            (official, xml, {'Content-Length': str(len(xml) + 1)}, True),
+            (official, evil_xml, {'Content-Length': str(len(evil_xml))}, True),
+            (official, unknown_encoding, {'Content-Length': str(len(unknown_encoding))}, True),
+            (official, html, {'Content-Length': str(len(html))}, True),
+            (custom, xml, {'Content-Length': str(len(xml))}, False),
+        ]
+        with tempfile.TemporaryDirectory() as tmp, patch('cs2demo.download.build_opener') as factory:
+            for url, content, headers, read in inputs:
+                with self.subTest(headers=headers, intended_probe=read):
+                    stream = TrackedBody(content)
+                    factory.return_value.open.side_effect = HTTPError(url, 404, 'Missing', headers, stream)
+                    with self.assertRaisesRegex(DownloadError, '^http_404$') as caught:
+                        download_demo(url, Path(tmp), extra_hosts=('files.example.org',))
+                    self.assertNotIn('origin_code', caught.exception.details)
+                    self.assertEqual(stream.requests, [int(headers['Content-Length'])] if read else [])
+                    if url == custom:
+                        self.assertNotIn('url_fingerprint', caught.exception.details)
+
     def test_retryable_http_errors_and_truncated_transfers_stay_on_custom_https_origin(self):
         with tempfile.TemporaryDirectory() as tmp, patch('cs2demo.download.build_opener') as factory:
             url = 'https://files.example.org/730/a.dem?auth=signed-private-value'
@@ -167,8 +226,10 @@ class DownloadTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp, patch('cs2demo.download.build_opener') as factory:
             factory.return_value.open.return_value = Response()
-            target, _ = download_demo('http://replay1.valve.net/730/a.dem.bz2', Path(tmp), on_progress=observe)
+            url = 'http://replay1.valve.net/730/a.dem.bz2'
+            target, receipt = download_demo(url, Path(tmp), on_progress=observe)
             self.assertEqual(target.read_bytes(), raw)
+            self.assertEqual(receipt['url_fingerprint'], hashlib.sha256(url.encode()).hexdigest()[:16])
         self.assertEqual(seen[0], ('downloading', {'attempt': 1}))
         self.assertIn(('downloading', {'attempt': 1, 'received_bytes': 0, 'total_bytes': len(payload)}), seen)
         self.assertEqual(seen[-3:], [('downloading', {'attempt': 1, 'received_bytes': len(payload), 'total_bytes': len(payload)}),

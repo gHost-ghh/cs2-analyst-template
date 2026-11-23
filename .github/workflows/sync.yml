@@ -89,7 +89,7 @@ jobs:
           elif [ "$TRIGGER_EVENT" = "workflow_dispatch" ]; then
             args+=(--limit "${REQUESTED_JOB_LIMIT:-4}")
           else
-            args+=(--limit 2)
+            args+=(--limit 4)
           fi
           python -m cs2demo.pipeline "${args[@]}"
       - name: Add Demo worker report to run summary

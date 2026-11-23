@@ -131,7 +131,11 @@ export function syncResult(view,snapshot=null){
     if(completed===0&&downloads)return response('录像下载未完成',`${downloads} 场在下载阶段受阻，详情列出原因和最早重试时间。`,'failed');
     return response('工作流失败',known?'本轮已解析 0 场，未完成任务保留在队列。':'本轮没有可确认的解析结果，详情提供运行记录。','failed');
   }
-  if(outcome==='waiting_for_replays')return response('等待录像',known?`${known}；其余录像等待下一次可用的同步。`:'录像留在队列，下次符合重试条件时会再检查。','waiting');
+  if(outcome==='waiting_for_replays'){
+    const pending=demo?.job_results?.filter(job=>job.error_code==='replay_origin_pending').length;
+    if(pending)return response('等待源站录像',`${pending} 场比赛已找到，录像源站尚未提供文件。队列会在符合条件后自动重试。`,'waiting');
+    return response('等待录像',known?`${known}；其余录像等待下一次可用的同步。`:'录像留在队列，下次符合重试条件时会再检查。','waiting');
+  }
   if(outcome==='deferred_steam_playing_elsewhere')return response('Steam 占用 · 同步暂缓','Steam 正在进行游戏，需要 Steam 的任务留在队列。','waiting');
   if(outcome==='failed')return response('Demo 同步失败',known?`${known}；可查看本轮阶段及处理队列。`:'可查看本轮阶段及处理队列。','failed');
   if(outcome==='idle'||(outcome==='ok'&&completed===0))return response('本轮无新增 Demo','本轮没有新增已解析的对局。','idle');
