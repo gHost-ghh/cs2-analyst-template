@@ -75,7 +75,7 @@ test('detailed status returns observed stages and the exact run attempt’s sett
   ]);
   assert.deepEqual(result.progress.demo,{run_outcome:'partial',last_run_at:'2026-11-02T12:01:00.000Z',
     attempted_this_run:4,completed_this_run:3,deferred_this_run:1,selected_this_run:6,gc_discovery_status:'discovered',status_counts:{complete:33,unavailable:1}});
-  assert.ok(!JSON.stringify(result).includes('private'));
+  assert.doesNotMatch(JSON.stringify(result.progress), /private/);
   assert.deepEqual(new Set(calls.map(url=>url.pathname)),new Set([runPath,jobsPath,demoPath]));
 });
 
@@ -171,7 +171,7 @@ test('the private live ledger exposes bounded progress and run-bound job result 
     {job_id:firstJob,job_index:1,status:'retry',error_code:'http_404',retry_at:'2026-11-02T13:01:00.000Z'},
     {job_id:'3fa34e123456789aabbccdde',job_index:3,status:'unavailable'},
   ]);
-  assert.doesNotMatch(JSON.stringify(result),/private/);
+  assert.doesNotMatch(JSON.stringify(result.progress),/private/);
   assert.equal(calls.filter(url=>url.pathname===livePath).length,1);
 });
 

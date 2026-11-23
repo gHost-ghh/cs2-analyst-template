@@ -2,13 +2,13 @@
   "schema_version": "1.0",
   "source_revisions": {
     "analysis": "1af1d3dc8c9986f7393936d13c43674f9633068a",
-    "dashboard": "6624acc6e6eac8ca6cab6c139597524ce298044a"
+    "dashboard": "2688aa3129c38a9d0903215b258eb3ab2d81ceb4"
   },
   "source_worktree_dirty": {
     "analysis": false,
     "dashboard": false
   },
-  "exported_content_sha256": "b77d3b66f12f30bd74f004f9e8f2edf2371ba77784a01be55df38eca11635bd6",
+  "exported_content_sha256": "732853b354328a86e8bc59501f39a9d529b60a65b483028fbc232346e7cdfd76",
   "files": {
     ".env.example": "1238bd48982f9d23d7eb4d624e911adb2e78dcd8138853d1496e8574ab2bccf9",
     ".gitattributes": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
@@ -58,7 +58,7 @@
     "dashboard/scripts/preview.mjs": "576d3eaa33593738ddb04dc73673486c70a93c305a53e1d4b89abba03f9b6962",
     "dashboard/scripts/raw-query.test.mjs": "35e99f284405a184041b39f347e3f68f1b870c5d1223810b314abf6219371cd2",
     "dashboard/scripts/sync-feedback-ui.test.mjs": "c3126c27e4e8377a5a2d93f8a1cf3a4a059d86fdec921947ece301485d35af19",
-    "dashboard/scripts/sync-progress-backend.test.mjs": "67d47f6f4833b230e227fb05cdc21b4a8effcb4f39e856f2f78e057384ec52cf",
+    "dashboard/scripts/sync-progress-backend.test.mjs": "0f356de399ece03dc8d42a1a2e8030b4db1217b7fc839e1795b0bbae8eceb850",
     "dashboard/scripts/sync-progress-client.test.mjs": "9fb905af5512eb8e3702e20afb018f85a427eabe42dae63ea25516d2aaf7ad0c",
     "dashboard/scripts/template-smoke.test.mjs": "3e3e5cbcaaf05ed3ba9a4d75bbc44315181ef0a384921370d948d40ea9213b41",
     "dashboard/shared/agent-visual.mjs": "6095580a150e6cda0964ff7fbb055bccc3cf01c240c171c1bc5ee1d448bfdb4f",
