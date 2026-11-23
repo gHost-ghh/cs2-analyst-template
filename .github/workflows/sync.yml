@@ -70,6 +70,7 @@ jobs:
         if: ${{ !cancelled() }}
         continue-on-error: true
         env:
+          CS2_LIVE_PROGRESS_TOKEN: ${{ github.event.repository.private && github.token || '' }}
           STEAMID64: ${{ secrets.STEAMID64 }}
           STEAM_REFRESH_TOKEN: ${{ secrets.STEAM_REFRESH_TOKEN }}
           CS2_DEMO_URL: ${{ inputs.demo_url }}

@@ -298,6 +298,9 @@ body{background:radial-gradient(ellipse at 45% -20%,#142230 0,transparent 45%),v
 .sync-stage-list li[data-step-state='failed'] { --step-tone: #f7a8ac; border-color: #724b57; }
 .sync-stage-list li[data-step-state='skipped'] { border-style: dashed; }
 .sync-stage-dot { width: .54rem; height: .54rem; box-sizing: border-box; border: 1px solid var(--step-tone); border-radius: 50%; margin-top: .3rem; }
+.sync-job-detail { display: grid; gap: .2rem; margin-top: .35rem; overflow-wrap: anywhere; }
+.sync-job-detail small { color: #a9c0ce; }
+.sync-job-results .sync-stage-copy { min-width: 0; overflow-wrap: anywhere; }
 [data-step-state='completed'] .sync-stage-dot, [data-step-state='failed'] .sync-stage-dot { background: var(--step-tone); }
 [data-step-state='in_progress'] .sync-stage-dot { background: var(--step-tone); box-shadow: 0 0 .8rem var(--step-tone); }
 .sync-stage-copy strong, .sync-stage-copy small { display: block; overflow-wrap: anywhere; }

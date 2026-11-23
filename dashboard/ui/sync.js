@@ -2,14 +2,18 @@ const requestPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a
 const runPattern=/^[1-9][0-9]{0,15}$/;
 const messages={sync_not_configured:'Demo 同步服务尚未配置',github_access_denied:'同步权限不足，请检查 GitHub 授权',workflow_unavailable:'同步任务暂不可用',workflow_input_rejected:'同步任务需要更新',github_rate_limited:'GitHub 请求频繁，请稍后重试',github_unavailable:'GitHub 暂时不可用，请稍后重试',origin_rejected:'请从当前页面发起同步',sign_in_required:'请先登录后同步 Demo',sync_state_unavailable:'同步状态暂不可用',sync_service_unavailable:'同步服务暂不可用'};
 const storageKey='cs2-demo-sync-pending-v1',receiptKey='cs2-demo-sync-receipt-v1',detailKey='cs2-demo-sync-detail-v1';
-const statusLabels={dispatching:'已提交',queued:'等待同步',in_progress:'正在同步',publishing:'正在更新分析数据',publication_failed:'数据更新未完成',completed:'已完成',failed:'未完成',unknown:'结果待确认'};
+const statusLabels={dispatching:'已提交',queued:'等待同步',in_progress:'正在同步',publishing:'正在更新分析数据',publication_failed:'网站数据更新失败',completed:'工作流已结束',failed:'工作流失败',unknown:'结果待确认'};
 const buttonLabels={dispatching:'正在提交',queued:'正在排队',in_progress:'正在同步',publishing:'正在更新分析数据',publication_failed:'重试数据更新',completed:'再次同步 Demo',unknown:'同步结果待确认',cooldown:'同步 Demo'};
 const activeStatuses=new Set(['dispatching','queued','in_progress','publishing']);
 const stepLabels={prepare:'准备运行环境',discover:'发现 Steam 对局',process:'下载与解析 Demo',summary:'整理同步报告',checkpoint:'保存分析数据',publish:'更新站点快照',finish:'检查运行结果'};
 const stepStates=new Set(['queued','in_progress','completed','skipped','failed']);
 const demoOutcomes=new Set(['idle','ok','partial','failed','blocked_auth','waiting_for_replays','deferred_steam_playing_elsewhere']);
-const countFields=['attempted_this_run','completed_this_run','deferred_this_run','selected_this_run'];
+const countFields=['attempted_this_run','completed_this_run','deferred_this_run','selected_this_run','settled_this_run'];
 const jobStates=['complete','pending','retry','unavailable','blocked_auth'];
+const jobResults=new Set(['complete','retry','unavailable','blocked_auth','deferred','verified']);
+const livePhases=new Set(['discovering','resolving','connecting','downloading','decompressing','validating','parsing','analyzing','saving','checkpointing','reporting','retrying','settled','finished']);
+const parserStages=new Set(['start','header','player_info','events','positions','metrics','all_player_metrics','advanced_metrics','crosshair_windows','mechanics_targets','radar_replay','tactical_replay']);
+const jobPattern=/^[a-f0-9]{24}$/;
 const detailStatuses=new Set([...Object.keys(statusLabels),'idle','not_configured','error','cooldown']);
 const observeIdleMs=50000;
 const safeTime=value=>typeof value==='string'&&value.length<=45&&Number.isFinite(Date.parse(value))?new Date(value).toISOString():null;
@@ -24,6 +28,38 @@ function safeRun(value){
     created_at:safeTime(value.created_at),updated_at:safeTime(value.updated_at),
     ...(safeCount(run_attempt,1000000)&&run_attempt>0?{run_attempt}:{})};
 }
+function safeJobResult(value){
+  if(!value||typeof value.job_id!=='string'||!jobPattern.test(value.job_id)||!safeCount(value.job_index,20)||value.job_index===0||!jobResults.has(value.status))return null;
+  return {job_id:value.job_id,job_index:value.job_index,status:value.status,
+    ...(typeof value.error_code==='string'&&/^[a-z0-9_]{1,64}$/.test(value.error_code)?{error_code:value.error_code}:{}),
+    ...(safeTime(value.retry_at)?{retry_at:safeTime(value.retry_at)}:{})};
+}
+function safeActivity(value){
+  if(!value||!livePhases.has(value.phase))return null;
+  const activity={phase:value.phase};
+  if(typeof value.job_id==='string'&&jobPattern.test(value.job_id))activity.job_id=value.job_id;
+  if(parserStages.has(value.parser_stage))activity.parser_stage=value.parser_stage;
+  if(typeof value.error_code==='string'&&/^[a-z0-9_]{1,64}$/.test(value.error_code))activity.error_code=value.error_code;
+  for(const key of ['updated_at','at','retry_at'])if(safeTime(value[key]))activity[key]=safeTime(value[key]);
+  for(const key of countFields)if(safeCount(value[key],20))activity[key]=value[key];
+  if(safeCount(value.job_index,20)&&value.job_index>0)activity.job_index=value.job_index;
+  if(safeCount(value.attempt,1000000)&&value.attempt>0)activity.attempt=value.attempt;
+  for(const key of ['received_bytes','total_bytes'])if(safeCount(value[key],2**40))activity[key]=value[key];
+  if(demoOutcomes.has(value.run_outcome))activity.run_outcome=value.run_outcome;
+  return activity;
+}
+function sameActivityRun(live,run){
+  return run&&live?.workflow_run_id===run.id&&Number.isSafeInteger(run.run_attempt)&&run.run_attempt>0
+    &&live.workflow_run_attempt===run.run_attempt;
+}
+function safeLive(value,run){
+  if(!sameActivityRun(value,run)||value.schema_version!==1||!safeCount(value.sequence,1000000)||!safeTime(value.updated_at))return null;
+  const activity=safeActivity(value);
+  if(!activity)return null;
+  const recent=(Array.isArray(value.recent)?value.recent.slice(-8):[]).map(safeActivity).filter(Boolean);
+  return {...activity,schema_version:value.schema_version,workflow_run_id:run.id,workflow_run_attempt:run.run_attempt,sequence:value.sequence,
+    ...(value.stale===true?{stale:true}:{}),recent};
+}
 function safeProgress(value,run){
   if(!run||value?.run_id!==run.id)return null;
   const steps=[],seen=new Set();
@@ -32,17 +68,22 @@ function safeProgress(value,run){
     seen.add(step.id);
     steps.push({id:step.id,label:stepLabels[step.id],state:step.state,started_at:safeTime(step.started_at),completed_at:safeTime(step.completed_at)});
   }
+  const live=safeLive(value.live,run);
+  const common={run_id:run.id,steps,...(live?{live}:{})};
   const raw=value.demo;
-  if(!raw||typeof raw!=='object')return {run_id:run.id,steps};
+  if(!raw||typeof raw!=='object')return common;
   const demo={};
   for(const key of countFields)if(safeCount(raw[key],20))demo[key]=raw[key];
   if(demoOutcomes.has(raw.run_outcome))demo.run_outcome=raw.run_outcome;
+  if(['processing','final'].includes(raw.checkpoint_state))demo.checkpoint_state=raw.checkpoint_state;
   if(['discovered','not_checked','expired','transient','unavailable'].includes(raw.gc_discovery_status))demo.gc_discovery_status=raw.gc_discovery_status;
   if(typeof raw.gc_discovery_error_code==='string'&&/^[a-z_]{1,64}$/.test(raw.gc_discovery_error_code))demo.gc_discovery_error_code=raw.gc_discovery_error_code;
   if(safeTime(raw.last_run_at))demo.last_run_at=raw.last_run_at;
   const counts=Object.fromEntries(jobStates.filter(key=>safeCount(raw.status_counts?.[key],1000000)).map(key=>[key,raw.status_counts[key]]));
   if(Object.keys(counts).length)demo.status_counts=counts;
-  return {run_id:run.id,steps,...(Object.keys(demo).length?{demo}:{})};
+  const jobs=(Array.isArray(raw.job_results)?raw.job_results.slice(0,20):[]).map(safeJobResult).filter(Boolean);
+  if(jobs.length)demo.job_results=jobs;
+  return {...common,...(Object.keys(demo).length?{demo}:{})};
 }
 function safePublication(value){
   if(!value||!['publishing','updated','unchanged','error'].includes(value.status))return null;
@@ -63,6 +104,45 @@ function detailView(result,source){
     ...(result.progress_stale===true?{progress_stale:true}:{}),
     ...(result.joined_existing===true?{joined_existing:true}:{})};
 }
+export function syncResult(view,snapshot=null){
+  const {run,progress,publication}=view||{};
+  const status=view?.status||'idle';
+  const previous=status==='idle'&&!run&&snapshot;
+  if(!previous&&!['completed','failed','publication_failed'].includes(status))return null;
+  const scoped=run&&progress?.run_id===run.id?progress:null;
+  const checkpoint=scoped?.demo?.checkpoint_state==='final'?scoped.demo:null;
+  const finished=sameActivityRun(scoped?.live,run)&&scoped.live.phase==='finished'&&demoOutcomes.has(scoped.live.run_outcome)?scoped.live:null;
+  const demo=previous||checkpoint||finished;
+  const completed=safeCount(demo?.completed_this_run,20)?demo.completed_this_run:null;
+  const known=completed===null?'':`已解析 ${completed} 场`;
+  const outcome=demo?.run_outcome;
+  const response=(title,detail,tone)=>{
+    const buttonState={success:'completed',failed:'failed',waiting:'waiting',idle:'unknown'}[tone];
+    return {title:previous?`上次同步 · ${title}`:title,detail,tone,buttonState};
+  };
+  if(run?.conclusion==='cancelled')return response('同步已取消',known||'本轮在结束前被取消。','waiting');
+  if(status==='publication_failed'||publication?.status==='error'){
+    return response('网站数据更新失败',known?`${known}，网站仍显示之前的数据。`:'网站仍显示之前的数据，可重试数据更新。','failed');
+  }
+  if(outcome==='blocked_auth')return response('Steam 登录受阻',known?`${known}，其余任务需要恢复 Steam 登录。`:'恢复 Steam 登录后才能继续获取录像。','failed');
+  if(status==='failed'){
+    if(completed>0)return response(`${known} · 工作流失败`,'可在同步详情查看剩余任务和失败阶段。','failed');
+    const downloads=checkpoint?.job_results?.filter(job=>/^(download_|http_|truncated_download)/.test(job.error_code||'')).length;
+    if(completed===0&&downloads)return response('录像下载未完成',`${downloads} 场在下载阶段受阻，详情列出原因和最早重试时间。`,'failed');
+    return response('工作流失败',known?'本轮已解析 0 场，未完成任务保留在队列。':'本轮没有可确认的解析结果，详情提供运行记录。','failed');
+  }
+  if(outcome==='waiting_for_replays')return response('等待录像',known?`${known}；其余录像等待下一次可用的同步。`:'录像留在队列，下次符合重试条件时会再检查。','waiting');
+  if(outcome==='deferred_steam_playing_elsewhere')return response('Steam 占用 · 同步暂缓','Steam 正在进行游戏，需要 Steam 的任务留在队列。','waiting');
+  if(outcome==='failed')return response('Demo 同步失败',known?`${known}；可查看本轮阶段及处理队列。`:'可查看本轮阶段及处理队列。','failed');
+  if(outcome==='idle'||(outcome==='ok'&&completed===0))return response('本轮无新增 Demo','本轮没有新增已解析的对局。','idle');
+  if(outcome==='partial'){
+    return completed>0?response(`${known} · 同步部分成功`,'其余任务留在处理队列。','waiting'):
+      response('本轮无新增 Demo','仍有任务待处理或重试。','waiting');
+  }
+  if(outcome==='ok'&&completed>0)return response(`已解析 ${completed} 场 Demo`,'结果可在网站数据更新后查看。','success');
+  if(previous)return null;
+  return response('工作流已结束 · 录像结果未确认','暂未收到本轮最终录像结果。','idle');
+}
 function sameRun(view,previous){
   return !!view&&view.id===previous?.id&&view.run_attempt===previous.run_attempt;
 }
@@ -70,8 +150,11 @@ function retainProgress(view,previous){
   if(!sameRun(view.run,previous?.run)||!previous.progress)return view;
   const steps=view.progress?.steps.length?view.progress.steps:previous.progress.steps;
   const demo=view.progress?.demo||previous.progress.demo;
-  const stale=steps.length&&!view.progress?.steps.length||demo&&!view.progress?.demo;
-  return stale?{...view,progress:{run_id:view.run.id,steps,...(demo?{demo}:{})},progress_stale:true}:view;
+  const nextLive=view.progress?.live,priorLive=previous.progress.live;
+  const staleLive=priorLive&&(!nextLive||nextLive.sequence<priorLive.sequence);
+  const live=staleLive?{...priorLive,stale:true}:nextLive;
+  const stale=staleLive||steps.length&&!view.progress?.steps.length||demo&&!view.progress?.demo;
+  return stale?{...view,progress:{run_id:view.run.id,steps,...(demo?{demo}:{}),...(live?{live}:{})},progress_stale:true}:view;
 }
 function olderRun(run,previous){
   if(!run||!previous)return false;
@@ -99,11 +182,11 @@ export function mountSync({button,resultButton,showReceipt,showProgress,reload,n
       button.dataset.syncBusy=String(active);
       if(detailed){
         const status=view?.source==='background'&&!observing?'idle':view?.status||'idle';
-        const waiting=['waiting_for_replays','deferred_steam_playing_elsewhere'].includes(view?.progress?.demo?.run_outcome);
-        button.dataset.syncState=status==='completed'&&waiting?'waiting':status;
+        const summary=status==='completed'||status==='failed'?syncResult(view):null;
+        button.dataset.syncState=summary?.buttonState||status;
         button.setAttribute?.('aria-busy',String(active));
         const target=button.querySelector?.('[data-sync-label]')||button;
-        target.textContent=buttonLabels[status]||'同步 Demo';
+        target.textContent=status==='completed'&&summary?.tone!=='success'?'同步 Demo':buttonLabels[status]||'同步 Demo';
       }else button.textContent=label||'↻ 同步 Demo';
     }
     if(resultButton){
@@ -184,15 +267,14 @@ export function mountSync({button,resultButton,showReceipt,showProgress,reload,n
     setManual(result);remember();displayReceipt(isReview);displayProgress();
     if(result.status==='completed'){
       clear();
-      const outcome=manualView?.progress?.demo?.run_outcome;
-      notice?.(outcome==='waiting_for_replays'?'同步已结束，录像待提供':outcome==='deferred_steam_playing_elsewhere'?'Steam 正在游戏，同步已暂缓':isReview?'本次 Demo 同步已完成':'Demo 同步完成，正在读取分析数据');
+      notice?.(syncResult(manualView)?.title||'工作流已结束，正在读取网站数据');
       if(previousStatus!=='completed'||!isReview)await reload?.();return;
     }
-    if(result.status==='publication_failed'){busy=false;paint('↻ 重试数据更新');notice?.('Demo 同步完成，数据更新暂未完成，可点击重试','error');return;}
+    if(result.status==='publication_failed'){busy=false;paint('↻ 重试数据更新');notice?.('网站数据更新失败，可点击重试','error');return;}
     if(result.status==='failed'){const reason=result.run?.conclusion==='cancelled'?'Demo 同步已取消':'Demo 同步未完成，可展开本次同步详情';clear();notice?.(reason,'error');return;}
     if(result.status==='unknown'){clear();notice?.('暂未确认任务结果，请展开本次同步详情','error');return;}
     busy=true;paint(result.status==='publishing'?'↻ 更新分析数据':result.status==='in_progress'?'↻ 正在同步':'↻ 等待同步');
-    if(!detailed||previousStatus!==result.status)notice?.(result.status==='publishing'?'Demo 同步完成，正在更新分析数据':result.status==='in_progress'?'正在下载与分析 Demo，当前数据可继续查看':result.joined_existing?'已有同步任务，正在查看进度':'Demo 同步任务已提交');
+    if(!detailed||previousStatus!==result.status)notice?.(result.status==='publishing'?'正在更新网站分析数据':result.status==='in_progress'?'正在下载与分析 Demo，当前数据可继续查看':result.joined_existing?'已有同步任务，正在查看进度':'Demo 同步任务已提交');
     schedule(Math.max(5000,Math.min(30000,(result.retry_after||10)*1000)));
   }
   async function refresh(){
@@ -233,7 +315,7 @@ export function mountSync({button,resultButton,showReceipt,showProgress,reload,n
   if(detailed&&(pending||receipt)){
     const base=pending||receipt;
     let saved;
-    try {const text=storage?.getItem(detailKey);if(text&&text.length<=8192){const value=JSON.parse(text);if(base.run_id&&value?.run?.id===base.run_id)saved=value;}}catch{}
+    try {const text=storage?.getItem(detailKey);if(text&&text.length<=16384){const value=JSON.parse(text);if(base.run_id&&value?.run?.id===base.run_id)saved=value;}}catch{}
     setManual({...saved,status:base.status,run:saved?.run||(base.run_id?{id:base.run_id,conclusion:base.conclusion}:null)});
   }
   displayReceipt();displayProgress();paint(pending?.phase==='publication_failed'?'↻ 重试数据更新':busy?'↻ 查询同步':null);

@@ -1,6 +1,6 @@
 import {mountPlayers} from './players.js';
 import {mountCoach,createCoachSession,mountCoachSurface} from './coach.js';
-import {mountSync} from './sync.js';
+import {mountSync,syncResult} from './sync.js';
 import {mountNativeRender,nativeClipKey,nativeArtifactMatches} from './native-render.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -929,23 +929,11 @@ const syncStatusCopy={
   dispatching:['正在提交','正在等待同步任务回执。','active'],
   queued:['任务已排队','等待 GitHub Actions 分配运行环境。','waiting'],
   in_progress:['正在同步','正在同步比赛数据，当前分析仍可查看。','active'],
-  publishing:['正在更新网站','同步任务已结束，正在应用已验证的数据。','active'],
-  publication_failed:['数据更新未完成','同步任务已结束，可重试将结果更新到网站。','failed'],
-  completed:['同步已结束','请查看本轮处理结果。','success'],
-  failed:['同步未完成','可展开同步阶段或在 GitHub Actions 查看详情。','failed'],
+  publishing:['正在更新网站','正在发布已保存的分析数据。','active'],
   unknown:['结果待确认','暂时无法确认运行结果。','waiting'],
   cooldown:['等待重试','同步请求间隔过短。','waiting'],
   error:['暂时无法读取同步状态','稍后可以重新检查。','failed'],
   not_configured:['同步服务尚未配置','可查看网站上次保存的同步数据。','idle'],
-};
-const syncOutcomeCopy={
-  idle:['本轮无需处理录像','本轮没有可处理的录像任务。','success'],
-  ok:['同步已完成','本轮录像任务已处理完成。','success'],
-  partial:['部分任务已完成','其余任务仍保留在处理队列中。','waiting'],
-  failed:['同步未完成','请查看本轮同步阶段及处理队列。','failed'],
-  blocked_auth:['Steam 登录受阻','需要恢复 Steam 登录后才能继续获取录像。','failed'],
-  waiting_for_replays:['等待录像','录像仍在处理队列，系统会按计划重试。','waiting'],
-  deferred_steam_playing_elsewhere:['已推迟同步','Steam 正在进行游戏。需要 Steam 的任务留待后续同步。','waiting'],
 };
 const syncFailureCopy={
   sync_not_configured:'网站尚未配置同步服务。',
@@ -961,29 +949,47 @@ const syncStepLabels={queued:'待开始',in_progress:'进行中',completed:'已�
 const activeSyncStatuses=new Set(['dispatching','queued','in_progress','publishing']);
 const syncCount=value=>Number.isSafeInteger(value)&&value>=0?value:null;
 const syncTime=value=>typeof value==='string'&&Number.isFinite(Date.parse(value))?`<time datetime="${esc(value)}">${esc(date(value))}</time>`:'—';
+const syncActivityLabels={
+  discovering:'查询 Steam 最近比赛',resolving:'向 Steam 获取录像地址',connecting:'连接录像服务器',downloading:'下载 Demo 文件',
+  decompressing:'解压 Demo 文件',validating:'检查 Demo 格式与校验值',parsing:'解析 Demo',analyzing:'计算比赛指标',
+  saving:'写入比赛统计与回放分片',checkpointing:'提交已保存的比赛数据',reporting:'生成本轮同步报告',
+  retrying:'等待再次连接录像服务器',settled:'记录单场结果',finished:'保存本轮结果',
+};
+const syncParserLabels={
+  start:'启动解析进程',header:'读取 Demo 文件头',player_info:'识别参赛玩家和本人账号',events:'提取击杀、伤害与道具事件',positions:'读取玩家位置与视角',
+  metrics:'计算逐回合表现',all_player_metrics:'计算全员逐回合统计',advanced_metrics:'计算进阶对局指标',crosshair_windows:'生成准星轨迹片段',
+  mechanics_targets:'计算目标关联与停步指标',radar_replay:'生成战术雷达帧',tactical_replay:'整理道具与交火回放',
+};
+const syncJobResultLabels={complete:'已解析',verified:'回放来源已验证',retry:'等待重试',unavailable:'等待录像',blocked_auth:'需要 Steam 登录',deferred:'已暂缓'};
+const activeSyncJobPhases=new Set(['connecting','downloading','decompressing','validating','parsing','analyzing','saving','retrying']);
+const syncActivityLabel=activity=>syncParserLabels[activity?.parser_stage]||syncActivityLabels[activity?.phase]||'';
+const syncErrorText=code=>typeof code==='string'&&/^[a-z0-9_]{1,64}$/.test(code)?errorLabels[code]||`同步诊断 ${code}`:'';
+function syncBytes(bytes){
+  if(bytes>=1024**2)return `${format(bytes/1024**2,1)} MiB`;
+  if(bytes>=1024)return `${format(bytes/1024,1)} KiB`;
+  return `${format(bytes)} B`;
+}
 
 function syncPresentation(view,snapshot){
   const run=view?.run,publication=view?.publication;
   const progress=run&&view.progress?.run_id===run.id?view.progress:null;
   const status=view?.status==='idle'&&run?.status==='completed'?(run.conclusion==='success'?'completed':'failed'):view?.status||'idle';
   const active=activeSyncStatuses.has(status);
+  const live=progress?.live?.workflow_run_id===run?.id&&progress?.live?.workflow_run_attempt===run?.run_attempt?progress?.live:null;
   const fromSnapshot=!run&&!active&&!progress?.demo&&['idle','error','not_configured'].includes(status);
   const demo=progress?.demo||(fromSnapshot?snapshot:null);
+  const useLive=live&&demo?.checkpoint_state!=='final'&&(live.phase==='finished'||status==='in_progress'&&!live.stale);
+  const counts=useLive?{...demo,...live}:demo;
   let [title,detail,tone]=syncStatusCopy[status]||syncStatusCopy.unknown;
   const stage=Array.isArray(progress?.steps)?progress.steps.find(step=>step.state==='in_progress'):null;
-  if(status==='completed'||status==='failed'||status==='idle'&&fromSnapshot){
-    const outcome=syncOutcomeCopy[demo?.run_outcome];
-    if(outcome&&(status!=='failed'||outcome[2]!=='success')){
-      [title,detail,tone]=outcome;
-      if(fromSnapshot)title=`上次同步 · ${title}`;
-    }
-    if(status==='failed'&&run?.conclusion==='cancelled')[title,detail,tone]=['同步已取消','任务已停止。','waiting'];
-  }
+  const result=syncResult({...view,status},fromSnapshot?snapshot:null);
+  if(result)({title,detail,tone}=result);
   if(view?.error&&syncFailureCopy[view.error])detail=syncFailureCopy[view.error];
   const retryAfter=syncCount(view?.retry_after);
   if(status==='cooldown'&&retryAfter)detail=`${retryAfter} 秒后可以重新发起同步。`;
-  if(status==='in_progress'&&stage?.label)detail=stage.label;
-  return {status,active,title,detail,tone,run,progress,publication,demo,stage};
+  if(status==='in_progress')detail=!live?.stale&&syncActivityLabel(live)||stage?.label||detail;
+  const inFlight=useLive&&status==='in_progress'&&activeSyncJobPhases.has(live.phase)&&syncCount(live.job_index)>0;
+  return {status,active,title,detail,tone,run,progress,publication,demo,stage,live,counts,inFlight};
 }
 
 function syncBar(value,total,label,indeterminate=false){
@@ -992,10 +998,42 @@ function syncBar(value,total,label,indeterminate=false){
   return `<div class="sync-meter${indeterminate?' is-indeterminate':''}" role="progressbar" aria-label="${esc(label)}"${range}><i style="--sync-fill:${percent}%"></i></div>`;
 }
 
+function syncLiveContent(live,status){
+  const label=syncActivityLabel(live);
+  if(!live||!label)return '';
+  const jobPrefix=typeof live.job_id==='string'&&/^[a-f0-9]{24}$/.test(live.job_id)?live.job_id.slice(0,10):'';
+  const match=live.job_index?`任务 ${live.job_index}${live.selected_this_run>=live.job_index?` / ${live.selected_this_run}`:''}${jobPrefix?` · ${jobPrefix}`:''}`:jobPrefix;
+  const detail=[match,live.attempt?`第 ${live.attempt} 次尝试`:'',syncErrorText(live.error_code)].filter(Boolean).join(' · ');
+  const current=status==='in_progress'&&!live.stale;
+  const received=syncCount(live.received_bytes),total=syncCount(live.total_bytes);
+  const downloading=current&&live.phase==='downloading';
+  const determinate=downloading&&received!==null&&total>0&&received<=total;
+  const transfer=downloading?`<div class="sync-meter-block"><div class="sync-meter-readout"><span>录像传输</span><strong>${determinate?`${syncBytes(received)} / ${syncBytes(total)}`:received!==null?`已接收 ${syncBytes(received)}`:'等待下载响应'}</strong></div>${syncBar(received,total,'录像文件传输进度',!determinate)}</div>`:'';
+  const retry=live.retry_at?`<small>可重试时间 ${syncTime(live.retry_at)}</small>`:'';
+  const prefix=current?'当前工作':'最近记录';
+  return `<section class="sync-job-live sync-run-queue" aria-label="${prefix}"><span>${prefix} · ${syncTime(live.updated_at)}</span><div class="sync-job-detail"><strong>${esc(label)}</strong>${detail?`<small>${esc(detail)}</small>`:''}${retry}</div>${transfer}</section>`;
+}
+
+function syncJobResultsContent(records){
+  const items=Array.isArray(records)?records.slice(0,20):[];
+  if(!items.length)return '';
+  return `<section class="sync-run-queue" aria-label="本轮逐场结果"><span>本轮逐场结果</span><ol class="sync-stage-list sync-job-results">${items.map(item=>{
+    const state=item.status==='complete'||item.status==='verified'?'completed':item.status==='blocked_auth'?'failed':'skipped';
+    const label=syncJobResultLabels[item.status]||'结果待确认',error=syncErrorText(item.error_code);
+    return `<li data-step-state="${state}"><span class="sync-stage-dot" aria-hidden="true"></span><span class="sync-stage-copy"><strong>任务 ${format(item.job_index)} · ${esc(label)}</strong><small>${esc(String(item.job_id||'').slice(0,10))}${error?` · ${esc(error)}`:''}${item.retry_at?` · 最早可重试 ${syncTime(item.retry_at)}`:''}</small></span></li>`;
+  }).join('')}</ol></section>`;
+}
+
+function syncActivityHistory(live){
+  const rows=Array.isArray(live?.recent)?live.recent.filter(item=>syncActivityLabel(item)).slice(-5).reverse():[];
+  if(!rows.length)return '';
+  return `<section class="sync-run-queue" aria-label="最近工作记录"><span>最近工作记录</span><ol class="sync-stage-list">${rows.map(item=>`<li><span class="sync-stage-dot" aria-hidden="true"></span><span class="sync-stage-copy"><strong>${esc(syncActivityLabel(item))}</strong><small>${syncTime(item.at||item.updated_at)}${item.job_index?` · 任务 ${format(item.job_index)}`:''}</small></span></li>`).join('')}</ol></section>`;
+}
+
 function syncRunContent(view,snapshot,{dialog=false}={}){
-  const {status,active,title,detail,tone,run,progress,publication,demo,stage}=syncPresentation(view,snapshot);
-  const attempted=syncCount(demo?.attempted_this_run),deferred=syncCount(demo?.deferred_this_run),selected=syncCount(demo?.selected_this_run);
-  const completed=syncCount(demo?.completed_this_run),settled=attempted===null?null:attempted+(deferred||0);
+  const {status,active,title,detail,tone,run,progress,publication,demo,stage,live,counts,inFlight}=syncPresentation(view,snapshot);
+  const attempted=syncCount(counts?.attempted_this_run),deferred=syncCount(counts?.deferred_this_run),selected=syncCount(counts?.selected_this_run);
+  const completed=syncCount(counts?.completed_this_run),settled=syncCount(counts?.settled_this_run)??(attempted===null?null:Math.max(0,attempted-(inFlight?1:0))+(deferred||0));
   const shards=syncCount(publication?.staged_count),totalShards=syncCount(publication?.total_shards);
   let meter='';
   if(status==='publishing'&&shards!==null&&totalShards&&shards<=totalShards){
@@ -1006,7 +1044,8 @@ function syncRunContent(view,snapshot,{dialog=false}={}){
     meter=syncBar(null,null,stage?.label||'等待同步进度',true);
   }
   const stats=[['已尝试',attempted],['已解析',completed],['推迟到下轮',deferred||null]].filter(([,value])=>value!==null);
-  const counters=stats.length?`<dl class="sync-run-counts">${stats.map(([label,value])=>`<div><dt>${label}</dt><dd>${format(value)}</dd></div>`).join('')}</dl>`:'';
+  const counterHint=!active&&demo?.checkpoint_state==='processing'?'<span class="sync-stale">最后一个已保存检查点</span>':'';
+  const counters=stats.length?`${counterHint}<dl class="sync-run-counts">${stats.map(([label,value])=>`<div><dt>${label}</dt><dd>${format(value)}</dd></div>`).join('')}</dl>`:'';
   const queueCounts=[['已排队','pending'],['待重试','retry'],['待录像','unavailable'],['登录受阻','blocked_auth']]
     .map(([label,key])=>({label,key,value:syncCount(progress?.demo?.status_counts?.[key])}))
     .filter(({value})=>value!==null);
@@ -1022,11 +1061,14 @@ function syncRunContent(view,snapshot,{dialog=false}={}){
   const runURL=/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/[1-9]\d{0,15}$/.test(run?.url||'')?run.url:null;
   const foot=dialog&&runURL?`<a class="sync-run-link" href="${esc(runURL)}" target="_blank" rel="noopener noreferrer">查看 GitHub Actions 运行</a>`:'';
   const time=run?.created_at?`<span>创建 ${syncTime(run.created_at)}</span>`:demo?.last_run_at?`<span>上次记录 ${syncTime(demo.last_run_at)}</span>`:'';
-  const publicationLabel=publication?.status==='updated'?'网站数据已更新':publication?.status==='unchanged'?'网站数据已是最新':'';
-  const stale=view?.progress_stale||view?.read_error?'同步状态暂未更新':'';
+  const publicationLabel=publication?.status==='updated'?'网站快照已更新':publication?.status==='unchanged'?'网站快照无新版本':'';
+  const settledReport=!active&&progress?.demo?.checkpoint_state==='final';
+  const stale=!settledReport&&(view?.progress_stale||view?.read_error||live?.stale)?'同步状态暂未更新':'';
+  const work=settledReport?'':syncLiveContent(live,status);
+  const jobs=syncJobResultsContent(progress?.demo?.job_results);
   return `<div class="sync-run" data-sync-tone="${tone}" data-run-active="${active}">
     <div class="sync-run-head"><span class="sync-run-icon" aria-hidden="true"></span><div><${dialog?'h3':'h2'}>${esc(title)}</${dialog?'h3':'h2'}><p>${esc(detail)}</p></div><div class="sync-run-time">${time}${publicationLabel?`<span>${publicationLabel}</span>`:''}${stale?`<span class="sync-stale">${stale}</span>`:''}</div></div>
-    ${meter?`<div class="sync-meter-block">${meter}</div>`:''}${counters}${queue}${timeline}${foot}
+    ${work}${meter?`<div class="sync-meter-block">${meter}</div>`:''}${counters}${active?'':jobs}${queue}${timeline}${active?jobs:''}${dialog?syncActivityHistory(live):''}${foot}
   </div>`;
 }
 
@@ -1056,20 +1098,20 @@ function syncQueueCard(sync){
 
 function showSyncProgress(view,{open=false}={}){
   syncProgressView=view;
-  const {tone,title,stage}=syncPresentation(view);
+  const {tone,title,detail,stage,live,status}=syncPresentation(view);
   const note=$('#sync-live-note'),message=$('#sync-live-message');
   if(note&&message){
     const visible=Boolean(view&&view.source!=='background'&&view.status!=='idle');
     note.hidden=!visible;
     note.dataset.syncTone=tone;
-    const text=visible?(stage?.label&&view.status==='in_progress'?`${title} · ${stage.label}`:title):'';
+    const text=visible?(status==='in_progress'&&(stage?.label||syncActivityLabel(live))?`${title} · ${detail}`:title):'';
     if(message.textContent!==text)message.textContent=text;
   }
   const panel=$('#source-sync-status');
   if(panel)panel.innerHTML=syncRunContent(view,state.data?.sync);
   const announcer=$('#source-sync-announce');
   if(announcer){
-    const text=view?.source==='background'?(stage?.label?`${title} · ${stage.label}`:title):'';
+    const text=view?.source==='background'?(status==='in_progress'&&(stage?.label||syncActivityLabel(live))?`${title} · ${detail}`:title):'';
     if(announcer.textContent!==text)announcer.textContent=text;
   }
   const receipt=$('#sync-receipt');

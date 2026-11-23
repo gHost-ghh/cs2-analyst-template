@@ -7,6 +7,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from threading import Event
 
 from cs2demo.download import MAGIC
 from cs2demo.advanced import ANALYSIS_VERSION
@@ -323,11 +324,20 @@ class PipelineTests(unittest.TestCase):
             replay.write_bytes(MAGIC + b'fixture')
             published = []
             publisher = Mock()
+            live = Mock()
             publisher.publish.side_effect = lambda **_: published.append(
                 json.loads((root / 'reports/demo_status.json').read_text()))
-            result = run_pipeline(root, SID, local_demo=replay, parser=fake_parse, checkpoint_publisher=publisher)
+            result = run_pipeline(root, SID, local_demo=replay, parser=fake_parse,
+                                  checkpoint_publisher=publisher, live_progress=live)
             self.assertEqual(result['run_outcome'], 'ok')
             self.assertEqual([item['run_outcome'] for item in published], ['partial', 'ok'])
+            self.assertEqual([item['checkpoint_state'] for item in published], ['processing', 'final'])
+            phases = [event.args[0] for event in live.update.call_args_list]
+            self.assertIn('validating', phases)
+            self.assertIn('saving', phases)
+            self.assertIn('checkpointing', phases)
+            self.assertEqual(phases[-1], 'finished')
+            self.assertEqual(live.update.call_args.kwargs['run_outcome'], 'ok')
             for item in published:
                 self.assertEqual(item['workflow_run_id'], '39101234567')
                 self.assertEqual(item['workflow_run_attempt'], 2)
@@ -335,11 +345,55 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(item['attempted_this_run'], 1)
                 self.assertEqual(item['completed_this_run'], 1)
                 self.assertEqual(item['status_counts']['complete'], 1)
+                self.assertEqual(len(item['job_results']), 1)
+                self.assertEqual(item['job_results'][0]['status'], 'complete')
+                self.assertEqual(item['job_results'][0]['job_index'], 1)
             with patch.dict(os.environ, {'GITHUB_ACTIONS': 'false'}):
                 run_pipeline(root, SID)
             local_status = json.loads((root / 'reports/demo_status.json').read_text())
             self.assertNotIn('workflow_run_id', local_status)
             self.assertNotIn('workflow_run_attempt', local_status)
+
+    def test_backoff_separates_recent_publication_wait_from_transport_outage(self):
+        current = datetime.fromisoformat('2025-01-01T15:00:00+00:00')
+        job = {'attempts': 4, 'match_started_at': '2025-01-01T11:00:00Z'}
+        mark_failure(job, 'http_404', current, status='unavailable')
+        self.assertEqual(job['next_attempt_at'], '2025-01-01T15:30:00+00:00')
+        mark_failure(job, 'http_404', current, status='unavailable')
+        self.assertEqual(job['next_attempt_at'], '2025-01-01T16:00:00+00:00')
+        mark_failure(job, 'download_network_error', current)
+        self.assertEqual(job['next_attempt_at'], '2025-01-01T15:10:00+00:00')
+        mark_failure(job, 'download_socket_timeout', current)
+        self.assertEqual(job['next_attempt_at'], '2025-01-01T15:20:00+00:00')
+        mark_failure(job, 'http_404', current, status='unavailable')
+        self.assertEqual(job['next_attempt_at'], '2025-01-01T15:30:00+00:00')
+        job['match_started_at'] = '2024-12-01T11:00:00Z'
+        mark_failure(job, 'http_404', current, status='unavailable')
+        self.assertEqual(job['next_attempt_at'], '2025-01-02T07:00:00+00:00')
+        mark_failure(job, 'http_503', current, retry_after_seconds=3000)
+        self.assertEqual(job['next_attempt_at'], '2025-01-01T15:50:00+00:00')
+
+    def test_parser_exposes_observed_stage_without_inheriting_progress_token(self):
+        observed = Event()
+        stages = []
+
+        def report(phase, parser_stage):
+            stages.append((phase, parser_stage))
+            if parser_stage == 'all_player_metrics':
+                observed.set()
+
+        def process(args, **kwargs):
+            self.assertNotIn('CS2_LIVE_PROGRESS_TOKEN', kwargs['env'])
+            output = Path(args[-1])
+            output.with_name('parse_progress.json').write_text('{"stage":"all_player_metrics"}', encoding='utf-8')
+            self.assertTrue(observed.wait(3))
+            output.write_text('{"fixture":true}', encoding='utf-8')
+            return SimpleNamespace(returncode=0, stderr=b'')
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CS2_LIVE_PROGRESS_TOKEN': 'fixture'}), \
+             patch('cs2demo.pipeline.subprocess.run', side_effect=process):
+            self.assertEqual(parse_bounded(Path(tmp) / 'fixture.dem', SID, on_progress=report), {'fixture': True})
+        self.assertEqual(stages, [('parsing', 'start'), ('analyzing', 'all_player_metrics')])
 
     def test_deferred_resolution_does_not_hide_an_independent_parser_error(self):
         other_code = 'CSGO-GADqf-jjyJ8-cSP2r-smZRo-TO2xK'

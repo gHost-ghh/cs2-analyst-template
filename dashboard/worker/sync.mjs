@@ -8,8 +8,10 @@ const SYNC_UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0
 const SYNC_RUN_ID = /^[1-9][0-9]{0,15}$/;
 const SYNC_API = `https://api.github.com/repos/${SYNC_TARGET.owner}/${SYNC_TARGET.repo}`;
 const SYNC_WORKFLOW = `${SYNC_API}/actions/workflows/${SYNC_TARGET.workflow}`;
+const SYNC_LIVE_URL = `${SYNC_API}/contents/demo-sync-progress.json?ref=cs2-sync-progress`;
 const SYNC_HEADERS = {'content-type':'application/json; charset=utf-8','cache-control':'private, no-store','x-content-type-options':'nosniff','referrer-policy':'same-origin','x-robots-tag':'noindex, nofollow'};
 const SYNC_DETAIL_TIMEOUT_MS = 3500;
+const SYNC_LIVE_STALE_MS = 90000, SYNC_CLOCK_SKEW_MS = 15000;
 const SYNC_STAGE_LABELS = new Map([
   ['prepare','准备运行环境'],['discover','查询 Steam 比赛与战绩'],['process','下载并解析 Demo'],
   ['summary','整理处理结果'],['checkpoint','提交比赛数据'],['publish','通知站点更新'],['finish','核对运行结果'],
@@ -27,6 +29,18 @@ const SYNC_DISCOVERY_ERRORS = new Set([
   'steam_account_mismatch','steam_auth_rejected','steam_guard_reauth_required','steam_refresh_token_expired',
   'steam_refresh_token_invalid','steam_refresh_token_missing','steam_refresh_token_rejected','steam_refresh_token_requires_client',
 ]);
+const SYNC_BATCH_COUNTS = ['attempted_this_run','completed_this_run','deferred_this_run','selected_this_run','settled_this_run'];
+const SYNC_JOB_ID = /^[a-f0-9]{24}$/;
+const SYNC_JOB_STATES = new Set(['complete','retry','unavailable','blocked_auth','deferred','verified']);
+const SYNC_LIVE_PHASES = new Set(['discovering','resolving','connecting','downloading','decompressing','validating','parsing','analyzing','saving','checkpointing','reporting','retrying','settled','finished']);
+const SYNC_PARSER_STAGES = new Set(['start','header','player_info','events','positions','metrics','advanced_metrics','all_player_metrics','crosshair_windows','mechanics_targets','radar_replay','tactical_replay']);
+const SYNC_DOWNLOAD_ERRORS = new Set([
+  'download_network_error','download_socket_timeout','download_connection_reset','download_timeout','download_too_large',
+  'truncated_download','demo_too_large','not_cs2_demo','corrupt_demo','url_not_allowed',
+  'manual_url_required','match_unavailable','replay_url_unavailable','gc_url_unavailable','resolver_failed','resolver_process_failed',
+  'parsed_account_mismatch','native_source_manifest_write_failed','sync_worker_failed',
+]);
+const SYNC_PARSER_ERRORS = ['parser_timeout','parser_memory_limit','parser_player_absent','parser_event_schema','parser_no_live_rounds','parser_python_error','parser_worker_failed'];
 const SYNC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
 function syncJSON(value,status=200,extra={}) {return new Response(JSON.stringify(value),{status,headers:{...SYNC_HEADERS,...extra}});}
 class SyncError extends Error {constructor(code,status=503,retryAfter=null){super(code);this.code=code;this.status=status;this.retryAfter=retryAfter;}}
@@ -50,6 +64,76 @@ function syncRunAttempt(value) {
 }
 function syncMatchesRunId(value,runId) {
   return value===runId||Number.isSafeInteger(value)&&String(value)===runId;
+}
+function syncInRange(value,min,max) {
+  return Number.isSafeInteger(value)&&value>=min&&value<=max;
+}
+function syncSettledCounts(raw) {
+  const counts={};
+  for(const key of SYNC_BATCH_COUNTS)if(syncInRange(raw[key],0,20))counts[key]=raw[key];
+  if(counts.attempted_this_run!==undefined&&counts.completed_this_run>counts.attempted_this_run)delete counts.completed_this_run;
+  if(counts.selected_this_run!==undefined&&(counts.attempted_this_run??0)+(counts.deferred_this_run??0)>counts.selected_this_run)delete counts.selected_this_run;
+  if(counts.settled_this_run>counts.selected_this_run||counts.settled_this_run<counts.completed_this_run)delete counts.settled_this_run;
+  return counts;
+}
+function syncJobError(code) {
+  if(typeof code!=='string'||code.length>64)return null;
+  if(SYNC_DISCOVERY_ERRORS.has(code)||SYNC_DOWNLOAD_ERRORS.has(code)||/^http_[45][0-9]{2}$/.test(code))return code;
+  for(const parserCode of SYNC_PARSER_ERRORS){
+    if(code===parserCode||code.startsWith(parserCode+'_')&&SYNC_PARSER_STAGES.has(code.slice(parserCode.length+1)))return code;
+  }
+  return null;
+}
+function syncJobResultRows(value,selected) {
+  if(!Array.isArray(value)||value.length>20)return [];
+  const rows=[],ids=new Set(),indexes=new Set();
+  for(const item of value){
+    if(!item||typeof item.job_id!=='string'||!SYNC_JOB_ID.test(item.job_id)||!syncInRange(item.job_index,1,selected??20)
+      ||!SYNC_JOB_STATES.has(item.status)||ids.has(item.job_id)||indexes.has(item.job_index))continue;
+    ids.add(item.job_id);indexes.add(item.job_index);
+    const error=syncJobError(item.error_code),retryAt=syncDetailTime(item.retry_at);
+    rows.push({job_id:item.job_id,job_index:item.job_index,status:item.status,
+      ...(error?{error_code:error}:{}),...(retryAt?{retry_at:retryAt}:{})});
+  }
+  return rows.sort((a,b)=>a.job_index-b.job_index);
+}
+function syncLiveEvent(raw) {
+  const phase=raw?.phase;
+  if(!SYNC_LIVE_PHASES.has(phase))return null;
+  const event={phase};
+  if(typeof raw.job_id==='string'&&SYNC_JOB_ID.test(raw.job_id))event.job_id=raw.job_id;
+  if(syncInRange(raw.job_index,1,20))event.job_index=raw.job_index;
+  if(syncInRange(raw.attempt,1,20))event.attempt=raw.attempt;
+  if(SYNC_PARSER_STAGES.has(raw.parser_stage))event.parser_stage=raw.parser_stage;
+  const error=syncJobError(raw.error_code),retryAt=syncDetailTime(raw.retry_at);
+  if(error)event.error_code=error;
+  if(retryAt)event.retry_at=retryAt;
+  return event;
+}
+function syncDetailLive(raw,run,attempt,runStarted,now) {
+  if(raw?.schema_version!==1||raw.workflow_run_id!==run.id||raw.workflow_run_attempt!==attempt
+    ||!syncInRange(raw.sequence,1,1000000))return null;
+  const updatedAt=syncDetailTime(raw.updated_at),updated=Date.parse(updatedAt),earliest=Date.parse(runStarted)-SYNC_CLOCK_SKEW_MS;
+  if(!updatedAt||!Number.isFinite(earliest)||updated<earliest||updated>now+SYNC_CLOCK_SKEW_MS)return null;
+  const event=syncLiveEvent(raw);
+  if(!event)return null;
+  const live={schema_version:1,workflow_run_id:run.id,workflow_run_attempt:attempt,sequence:raw.sequence,updated_at:updatedAt,...event,...syncSettledCounts(raw)};
+  const maxBytes=2*1024**3;
+  if(syncInRange(raw.received_bytes,0,maxBytes))live.received_bytes=raw.received_bytes;
+  if(syncInRange(raw.total_bytes,1,maxBytes)&&raw.total_bytes>=(live.received_bytes??0))live.total_bytes=raw.total_bytes;
+  if(event.phase==='finished'&&SYNC_DEMO_OUTCOMES.has(raw.run_outcome))live.run_outcome=raw.run_outcome;
+  if(event.phase!=='finished'&&(run.status==='completed'||now-updated>SYNC_LIVE_STALE_MS))live.stale=true;
+  const recent=[];
+  if(Array.isArray(raw.recent)&&raw.recent.length<=8){
+    let last=earliest;
+    for(const item of raw.recent){
+      const past=syncLiveEvent(item),at=syncDetailTime(item?.at),stamp=Date.parse(at);
+      if(!past||!at||stamp<last||stamp>updated)continue;
+      last=stamp;recent.push({at,...past});
+    }
+  }
+  if(recent.length)live.recent=recent;
+  return live;
 }
 function syncStepState(step) {
   if(step.status==='completed'){
@@ -92,24 +176,22 @@ function syncDetailSteps(payload,runId,attempt) {
     return [{id,label,state,started_at:started[0]??null,completed_at:terminal?(completed.at(-1)??null):null}];
   });
 }
-function syncDetailDemo(raw,runId,attempt) {
+function syncDetailDemo(raw,runId,attempt,runStarted,now) {
   if(!attempt||!raw||!syncMatchesRunId(raw.workflow_run_id,runId)||syncRunAttempt(raw.workflow_run_attempt)!==attempt)return null;
-  const lastRun=syncDetailTime(raw.last_run_at);
-  if(!lastRun||!SYNC_DEMO_OUTCOMES.has(raw.run_outcome))return null;
-  const demo={run_outcome:raw.run_outcome,last_run_at:lastRun};
-  for(const key of ['attempted_this_run','completed_this_run','deferred_this_run','selected_this_run']){
-    if(Number.isSafeInteger(raw[key])&&raw[key]>=0&&raw[key]<=20)demo[key]=raw[key];
-  }
-  if(demo.attempted_this_run!==undefined&&demo.completed_this_run>demo.attempted_this_run)delete demo.completed_this_run;
-  if(demo.selected_this_run!==undefined&&(demo.attempted_this_run??0)+(demo.deferred_this_run??0)>demo.selected_this_run)delete demo.selected_this_run;
+  const lastRun=syncDetailTime(raw.last_run_at),observed=Date.parse(lastRun),earliest=Date.parse(runStarted)-SYNC_CLOCK_SKEW_MS;
+  if(!lastRun||!Number.isFinite(earliest)||observed<earliest||observed>now+SYNC_CLOCK_SKEW_MS||!SYNC_DEMO_OUTCOMES.has(raw.run_outcome))return null;
+  const demo={run_outcome:raw.run_outcome,last_run_at:lastRun,...syncSettledCounts(raw)};
+  if(raw.checkpoint_state==='processing'||raw.checkpoint_state==='final')demo.checkpoint_state=raw.checkpoint_state;
   if(SYNC_DISCOVERY_STATES.has(raw.gc_discovery_status))demo.gc_discovery_status=raw.gc_discovery_status;
   if(SYNC_DISCOVERY_ERRORS.has(raw.gc_discovery_error_code))demo.gc_discovery_error_code=raw.gc_discovery_error_code;
   const statusCounts={};
   for(const key of ['complete','pending','retry','blocked_auth','unavailable']){
     const value=raw.status_counts?.[key];
-    if(Number.isSafeInteger(value)&&value>=0)statusCounts[key]=value;
+    if(syncInRange(value,0,1000000))statusCounts[key]=value;
   }
   if(Object.keys(statusCounts).length)demo.status_counts=statusCounts;
+  const jobs=syncJobResultRows(raw.job_results,demo.selected_this_run);
+  if(jobs.length)demo.job_results=jobs;
   return demo;
 }
 function syncSafeRun(run) {
@@ -122,6 +204,9 @@ function syncSafeRun(run) {
 }
 function syncRunResult(run,requestId=null) {
   return {configured:true,status:run.status==='completed'?(run.conclusion==='success'?'completed':'failed'):run.status==='in_progress'?'in_progress':'queued',...(requestId?{request_id:requestId}:{}),run};
+}
+function syncActiveRun(items) {
+  return items.find(item=>item.run.status==='in_progress')??items.find(item=>SYNC_ACTIVE.has(item.run.status));
 }
 function syncReceiptResult(receipt,now) {
   if(receipt.error)return {configured:true,status:'failed',request_id:receipt.request_id,error:receipt.error};
@@ -166,13 +251,17 @@ export function createSyncHandler({fetcher=(...args)=>fetch(...args),now=()=>Dat
     if(run.status!=='in_progress'&&run.status!=='completed')return progress;
     const attempt=syncRunAttempt(raw.run_attempt);
     const jobsPath=attempt?`/actions/runs/${run.id}/attempts/${attempt}/jobs?per_page=10`:`/actions/runs/${run.id}/jobs?filter=latest&per_page=10`;
-    const [jobs,report]=await Promise.all([
+    const [jobs,report,ledger]=await Promise.all([
       readDetail(SYNC_API+jobsPath,token,128*1024),
       attempt?readDetail(`${SYNC_API}/contents/reports/demo_status.json?ref=${SYNC_TARGET.ref}`,token,8*1024,'application/vnd.github.raw+json'):null,
+      attempt&&raw.repository?.private===true?readDetail(SYNC_LIVE_URL,token,8*1024,'application/vnd.github.raw+json'):null,
     ]);
     progress.steps=syncDetailSteps(jobs,run.id,attempt);
-    const demo=syncDetailDemo(report,run.id,attempt);
+    const runStarted=syncDetailTime(raw.run_started_at)??run.created_at,observedAt=now();
+    const demo=syncDetailDemo(report,run.id,attempt,runStarted,observedAt);
     if(demo)progress.demo=demo;
+    const live=syncDetailLive(ledger,run,attempt,runStarted,observedAt);
+    if(live)progress.live=live;
     return progress;
   }
   async function complete(run,requestId,token,store,env) {
@@ -203,14 +292,14 @@ export function createSyncHandler({fetcher=(...args)=>fetch(...args),now=()=>Dat
       const receipt=await store.get(`requests/${requestId}`);if(!receipt)throw new SyncError('sync_request_not_found',404);
       return syncJSON(syncReceiptResult(receipt,now()));
     }
-    const active=items.find(item=>SYNC_ACTIVE.has(item.run.status));
+    const active=syncActiveRun(items);
     const latest=items[0];
     return detailedResult(active?syncRunResult(active.run):{configured:true,status:'idle',latest_run:latest?.run??null},active??latest,detail,token);
   }
   async function dispatch(input,token,store,env) {
     const previous=await store.get(`requests/${input.request_id}`);
     if(previous){const url=new URL('https://sync.invalid/api/sync');url.searchParams.set('request_id',input.request_id);return status(url,token,store,env);}
-    const items=await runs(token),active=items.find(item=>SYNC_ACTIVE.has(item.run.status));
+    const items=await runs(token),active=syncActiveRun(items);
     if(active)return syncJSON({...syncRunResult(active.run),joined_existing:true},202);
     const latest=items[0]?.run,age=latest?.created_at?now()-Date.parse(latest.created_at):Infinity;
     if(age>=0&&age<SYNC_COOLDOWN_MS){const retry=Math.ceil((SYNC_COOLDOWN_MS-age)/1000);return syncJSON({configured:true,status:'cooldown',error:'sync_cooldown',retry_after:retry,latest_run:latest},429,{'retry-after':String(retry)});}

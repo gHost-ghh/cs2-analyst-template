@@ -34,7 +34,7 @@ test('Data Center observes a scheduled run read-only, polls less often after com
   const feed=[
     {status:'queued',run:run('queued')},
     {status:'in_progress',run:run(),progress:progress()},
-    {status:'idle',latest_run:run('completed'),progress:progress({attempted_this_run:2,completed_this_run:0,run_outcome:'waiting_for_replays'})},
+    {status:'idle',latest_run:run('completed'),progress:progress({checkpoint_state:'final',attempted_this_run:2,completed_this_run:0,run_outcome:'waiting_for_replays'})},
   ];
   const h=harness(async()=>Response.json(feed.shift()));
   assert.equal(h.calls.length,0);
@@ -57,6 +57,44 @@ test('Data Center observes a scheduled run read-only, polls less often after com
   assert.deepEqual(h.calls,Array.from({length:3},()=>({url:'/api/sync?detail=1',method:'GET'})));
   assert.equal(h.tasks.size,1);assert.equal(h.delay,50000);
   h.controller.watch(false);assert.equal(h.tasks.size,0);
+  h.controller.dispose();
+});
+
+test('only a verified positive final outcome gives the sync button a success state',async()=>{
+  const latest_run={...run('completed'),run_attempt:1};
+  const result={status:'idle',latest_run};
+  const feed=[
+    result,
+    {...result,progress:progress({checkpoint_state:'processing',run_outcome:'ok',completed_this_run:2})},
+    {...result,progress:progress({checkpoint_state:'final',run_outcome:'ok',completed_this_run:2})},
+  ];
+  const h=harness(async()=>Response.json(feed.shift()));
+  h.controller.watch(true);
+  await h.tick();
+  assert.equal(h.button.dataset.syncState,'unknown');
+  await h.tick();
+  assert.equal(h.button.dataset.syncState,'unknown');
+  await h.tick();
+  assert.equal(h.button.dataset.syncState,'completed');
+  h.controller.dispose();
+});
+
+test('live facts retain exact run attempt and cannot regress to an older sequence',async()=>{
+  const live={schema_version:1,workflow_run_id:runId,workflow_run_attempt:1,phase:'downloading',sequence:8,
+    updated_at:timestamp,received_bytes:150,total_bytes:300,recent:[{at:timestamp,phase:'connecting',url:'https://example.test/private'}]};
+  const current={status:'in_progress',run:{...run(),run_attempt:1},progress:{...progress(),live}};
+  const feed=[current,{...current,progress:{...progress(),live:{...live,sequence:7,received_bytes:25}}},
+    {...current,run:{...run(),run_attempt:2}}];
+  const h=harness(async()=>Response.json(feed.shift()));
+  h.controller.watch(true);
+  await h.tick();
+  assert.equal(h.views.at(-1).view.progress.live.received_bytes,150);
+  assert.equal(h.views.at(-1).view.progress.live.recent[0].url,undefined);
+  await h.tick();
+  assert.equal(h.views.at(-1).view.progress.live.received_bytes,150);
+  assert.equal(h.views.at(-1).view.progress.live.stale,true);
+  await h.tick();
+  assert.equal(h.views.at(-1).view.progress.live,undefined);
   h.controller.dispose();
 });
 

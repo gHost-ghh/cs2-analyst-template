@@ -101,6 +101,8 @@ node tools/setup/configure.mjs --repository OWNER/PRIVATE_REPO --steamid YOUR_ST
 
 网页可在数据中心查看同步阶段、批次计数和等待重试的任务。阶段来自 GitHub Actions，计数来自匹配本次运行的检查点。旧运行或尚无检查点时，页面仍能显示已知阶段，处理数量会在检查点发布后显示。
 
+在私有仓库运行时，工作流可用自带的短期令牌写入 `cs2-sync-progress` 分支，让网站显示下载字节和解析子阶段。站点继续用已有的 `GITHUB_ACTIONS_TOKEN` 只读检查进度文件。若实时进度暂不可用，网页仍可显示 Actions 阶段及正式结果；一次工作流结束不会自动标记录像已解析。
+
 ## 6. 在 ChatGPT 连接 MCP
 
 Sites 发布带 `mcp` capability 的站点时，会为所有者创建或更新相应私有插件。使用 **该站点生成的插件**；不需要额外开一个公开 HTTP 服务，也不需要把 `OAI-Sites-Authorization` 或 GitHub token 贴进 ChatGPT。
